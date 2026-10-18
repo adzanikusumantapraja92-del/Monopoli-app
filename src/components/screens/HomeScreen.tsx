@@ -12,17 +12,27 @@ import {
   CheckCircle2, 
   Sparkles,
   Layers,
-  ArrowRight
+  ArrowRight,
+  LogOut,
+  UserCheck
 } from 'lucide-react';
 
 const PAWN_OPTIONS: PawnColor[] = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'cyan', 'rose'];
 
 export const HomeScreen: React.FC = () => {
-  const { createGame, joinGame } = useMonopoli();
+  const { 
+    createGame, 
+    joinGame, 
+    currentUser, 
+    loginWithGoogle, 
+    logout, 
+    isFirebaseConfigured 
+  } = useMonopoli();
+  
   const [mode, setMode] = useState<'create' | 'join'>('create');
 
   // Form states
-  const [name, setName] = useState('');
+  const [name, setName] = useState(currentUser?.displayName || '');
   const [selectedPawn, setSelectedPawn] = useState<PawnColor>('blue');
   const [initialBalance, setInitialBalance] = useState<number>(15000000);
   const [passStartReward, setPassStartReward] = useState<number>(2000000);
@@ -32,29 +42,44 @@ export const HomeScreen: React.FC = () => {
   // Join form state
   const [joinCode, setJoinCode] = useState('');
   const [joinError, setJoinError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleCreateSubmit = (e: React.FormEvent) => {
+  const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    createGame(
-      name || 'Host Permainan',
-      selectedPawn,
-      initialBalance,
-      passStartReward,
-      maxPlayers,
-      catalogPreset
-    );
+    setIsSubmitting(true);
+    try {
+      await createGame(
+        name || currentUser?.displayName || 'Host Permainan',
+        selectedPawn,
+        initialBalance,
+        passStartReward,
+        maxPlayers,
+        catalogPreset
+      );
+    } catch (err: any) {
+      alert('Gagal membuat room: ' + (err?.message || 'Error'));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleJoinSubmit = (e: React.FormEvent) => {
+  const handleJoinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setJoinError('');
     if (!joinCode.trim()) {
-      setJoinError('Masukkan kode room');
+      setJoinError('Masukkan kode room 6 karakter.');
       return;
     }
-    const success = joinGame(joinCode.trim(), name || 'Pemain Baru', selectedPawn);
-    if (!success) {
-      setJoinError('Kode room tidak ditemukan atau room sudah penuh.');
+    setIsSubmitting(true);
+    try {
+      const success = await joinGame(joinCode.trim(), name || currentUser?.displayName || 'Pemain Baru', selectedPawn);
+      if (!success) {
+        setJoinError('Kode room tidak ditemukan, room sudah penuh, atau permainan sudah aktif.');
+      }
+    } catch (err: any) {
+      setJoinError(err?.message || 'Gagal bergabung ke room.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -87,11 +112,63 @@ export const HomeScreen: React.FC = () => {
             </div>
             <div className="flex items-center gap-2 p-2.5 rounded-xl bg-white/5 border border-white/10 col-span-2 sm:col-span-1">
               <Users className="w-4 h-4 text-sky-400 shrink-0" />
-              <span className="text-slate-200">2–8 Pemain Multi</span>
+              <span className="text-slate-200">Multiplayer Cloud</span>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Auth Account Identity Strip */}
+      {isFirebaseConfigured && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-4 flex items-center justify-between shadow-2xs">
+          {currentUser ? (
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white font-bold flex items-center justify-center text-xs shadow-xs">
+                {currentUser.displayName?.charAt(0) || 'U'}
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <span>{currentUser.displayName}</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-emerald-100 text-emerald-800 font-semibold">
+                    Akun Google
+                  </span>
+                </p>
+                <p className="text-[11px] text-slate-500">{currentUser.email}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-slate-100 text-slate-600">
+                <UserCheck className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-800">Autentikasi Pemain</p>
+                <p className="text-[11px] text-slate-500">Masuk dengan Akun Google untuk sinkronisasi akun unik.</p>
+              </div>
+            </div>
+          )}
+
+          <div>
+            {currentUser ? (
+              <button
+                onClick={logout}
+                className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Keluar</span>
+              </button>
+            ) : (
+              <button
+                onClick={loginWithGoogle}
+                className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Masuk Google</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Mode Switch Tabs */}
       <div className="bg-slate-100 p-1 rounded-2xl flex gap-1 border border-slate-200">
@@ -104,7 +181,7 @@ export const HomeScreen: React.FC = () => {
           }`}
         >
           <Play className="w-4 h-4 text-emerald-600" />
-          <span>Buat Permainan Baru</span>
+          <span>Buat Room Baru (Host)</span>
         </button>
         <button
           onClick={() => setMode('join')}
@@ -115,7 +192,7 @@ export const HomeScreen: React.FC = () => {
           }`}
         >
           <LogIn className="w-4 h-4 text-blue-600" />
-          <span>Gabung Room Permainan</span>
+          <span>Gabung Room (Pemain)</span>
         </button>
       </div>
 
@@ -254,10 +331,11 @@ export const HomeScreen: React.FC = () => {
           <div className="pt-3">
             <button
               type="submit"
+              disabled={isSubmitting}
               className="w-full py-3 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-99 text-white font-semibold text-sm transition-all shadow-sm flex items-center justify-center gap-2"
             >
               <Play className="w-4 h-4 fill-white" />
-              <span>Buka Ruang Permainan (Ke Lobby)</span>
+              <span>{isSubmitting ? 'Membuat Room di Cloud...' : 'Buka Ruang Permainan (Ke Lobby)'}</span>
             </button>
           </div>
         </form>
@@ -330,10 +408,11 @@ export const HomeScreen: React.FC = () => {
           <div className="pt-2">
             <button
               type="submit"
+              disabled={isSubmitting}
               className="w-full py-3 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-99 text-white font-semibold text-sm transition-all shadow-sm flex items-center justify-center gap-2"
             >
               <LogIn className="w-4 h-4" />
-              <span>Masuk ke Room Permainan</span>
+              <span>{isSubmitting ? 'Menghubungkan ke Room...' : 'Masuk ke Room Permainan'}</span>
             </button>
           </div>
         </form>

@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isMemberOf(gameId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/games/$(gameId)/members/$(request.auth.uid));
+    }
+
+    function isHostOf(gameId) {
+      return isSignedIn() && get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid;
+    }
+
+    match /games/{gameId} {
+      // Room lookup by roomCode or direct ID
+      allow read: if isSignedIn();
+
+      // Host creates the game room
+      allow create: if isSignedIn() 
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.status == 'lobby'
+        && request.resource.data.initialBalanceDistributed == false;
+
+      // Only host can start game or change room status
+      allow update: if isSignedIn() && (
+        (resource.data.hostUid == request.auth.uid && 
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'startedAt', 'initialBalanceDistributed']))
+        ||
+        // Joining updates member count
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['membersCount']))
+      );
+
+      // Members subcollection
+      match /members/{memberUid} {
+        allow read: if isSignedIn();
+
+        // Player registers their own seat with 0 initial balance
+        allow create: if isSignedIn() 
+          && request.auth.uid == memberUid 
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.balance == 0;
+
+        // Disallow direct balance or asset manipulation from client
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      // Assets catalog subcollection
+      match /assets/{assetId} {
+        allow read: if isSignedIn();
+        // Initialized upon game creation by host or system
+        allow create: if isSignedIn() && isHostOf(gameId);
+        // Direct client ownership/mortgage modification is blocked
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      // Transactions subcollection (Append-only Ledger)
+      match /transactions/{txId} {
+        allow read: if isSignedIn();
+        // Client cannot create raw unverified transactions
+        allow create: if false;
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      // Consensus approval requests
+      match /requests/{requestId} {
+        allow read: if isSignedIn();
+
+        // Requester creates proposal
+        allow create: if isSignedIn() 
+          && isMemberOf(gameId) 
+          && request.resource.data.requesterId == request.auth.uid
+          && request.resource.data.status == 'pending';
+
+        // Member casts vote or system resolves
+        allow update: if isSignedIn() 
+          && isMemberOf(gameId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['validators', 'status', 'rejectionReason']);
+
+        allow delete: if false;
+      }
+    }
+  }
+}

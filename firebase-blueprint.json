@@ -1,0 +1,122 @@
+{
+  "entities": {
+    "Game": {
+      "title": "Game Room",
+      "description": "Represents a multiplayer Monopoly game room session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "roomCode": { "type": "string" },
+        "hostUid": { "type": "string" },
+        "status": { "type": "string", "enum": ["lobby", "active", "finished"] },
+        "createdAt": { "type": "number" },
+        "startedAt": { "type": "number" },
+        "settings": {
+          "type": "object"
+        },
+        "initialBalanceDistributed": { "type": "boolean" },
+        "membersCount": { "type": "number" }
+      },
+      "required": ["id", "roomCode", "hostUid", "status", "createdAt", "initialBalanceDistributed"]
+    },
+    "GameMember": {
+      "title": "Game Room Member",
+      "description": "Represents a physical player attached to a game room via Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "pawnColor": { "type": "string" },
+        "isHost": { "type": "boolean" },
+        "balance": { "type": "number" },
+        "isBankrupt": { "type": "boolean" },
+        "joinedAt": { "type": "number" },
+        "propertiesOwnedCount": { "type": "number" }
+      },
+      "required": ["uid", "displayName", "pawnColor", "isHost", "balance", "joinedAt"]
+    },
+    "AssetItem": {
+      "title": "Board Asset",
+      "description": "Property, transport, or utility deed on the board.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "group": { "type": "string" },
+        "category": { "type": "string" },
+        "buyPrice": { "type": "number" },
+        "mortgageValue": { "type": "number" },
+        "rentBase": { "type": "number" },
+        "ownerId": { "type": "string" },
+        "isMortgaged": { "type": "boolean" },
+        "housesCount": { "type": "number" },
+        "hotelsCount": { "type": "number" }
+      },
+      "required": ["id", "name", "group", "category", "buyPrice", "mortgageValue", "rentBase"]
+    },
+    "LedgerEntry": {
+      "title": "Financial Ledger Transaction",
+      "description": "Append-only immutable record of cash movement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "gameId": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "sourceId": { "type": "string" },
+        "sourceName": { "type": "string" },
+        "targetId": { "type": "string" },
+        "targetName": { "type": "string" },
+        "type": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string" },
+        "description": { "type": "string" },
+        "referenceId": { "type": "string" }
+      },
+      "required": ["id", "gameId", "timestamp", "sourceId", "targetId", "type", "amount", "status", "description"]
+    },
+    "ApprovalRequest": {
+      "title": "Consensus Approval Request",
+      "description": "Multi-player consensus proposal for physical board events.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "gameId": { "type": "string" },
+        "requesterId": { "type": "string" },
+        "requesterName": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "detail": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "validators": { "type": "object" },
+        "rejectionReason": { "type": "string" }
+      },
+      "required": ["id", "gameId", "requesterId", "type", "title", "amount", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/games/{gameId}": {
+      "schema": { "$ref": "#/entities/Game" },
+      "description": "Game room sessions."
+    },
+    "/games/{gameId}/members/{memberUid}": {
+      "schema": { "$ref": "#/entities/GameMember" },
+      "description": "Members participating in the game room."
+    },
+    "/games/{gameId}/assets/{assetId}": {
+      "schema": { "$ref": "#/entities/AssetItem" },
+      "description": "Board assets catalog and ownership state."
+    },
+    "/games/{gameId}/transactions/{txId}": {
+      "schema": { "$ref": "#/entities/LedgerEntry" },
+      "description": "Append-only transactions ledger."
+    },
+    "/games/{gameId}/requests/{requestId}": {
+      "schema": { "$ref": "#/entities/ApprovalRequest" },
+      "description": "Physical event consensus requests."
+    }
+  }
+}

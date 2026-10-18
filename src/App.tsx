@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 
 const AppContent: React.FC = () => {
-  const { room, currentMember, activeTab, setActiveTab, requests } = useMonopoli();
+  const { room, currentMember, activeTab, setActiveTab, requests, isLoading } = useMonopoli();
   const [setupModalOpen, setSetupModalOpen] = useState(false);
 
   const pendingRequestsCount = requests.filter(r => r.status === 'pending').length;
@@ -82,19 +82,30 @@ const AppContent: React.FC = () => {
         {/* Firebase Status Requirement Notice */}
         <FirebaseStatusBanner onConnectClick={() => setSetupModalOpen(true)} />
 
-        {/* Screen Switching Logic */}
-        {!room && <HomeScreen />}
-
-        {room && room.status === 'lobby' && <LobbyScreen />}
-
-        {room && room.status === 'active' && (
-          <div>
-            {activeTab === 'home' && <DashboardScreen />}
-            {activeTab === 'assets' && <AssetsScreen />}
-            {activeTab === 'requests' && <RequestsScreen />}
-            {activeTab === 'activity' && <ActivityScreen />}
-            {activeTab === 'settings' && <SettingsScreen />}
+        {/* Loading state while checking Firebase Auth / Firestore */}
+        {isLoading ? (
+          <div className="bg-white rounded-3xl border border-slate-200/80 p-12 text-center space-y-3 shadow-xs">
+            <div className="w-8 h-8 border-3 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto" />
+            <p className="text-xs font-semibold text-slate-700">Memeriksa sesi room & akun...</p>
+            <p className="text-[11px] text-slate-400">Menghubungkan ke Cloud Firestore</p>
           </div>
+        ) : (
+          <>
+            {/* Screen Switching Logic */}
+            {!room && <HomeScreen />}
+
+            {room && room.status === 'lobby' && <LobbyScreen />}
+
+            {room && room.status === 'active' && (
+              <div>
+                {activeTab === 'home' && <DashboardScreen />}
+                {activeTab === 'assets' && <AssetsScreen />}
+                {activeTab === 'requests' && <RequestsScreen />}
+                {activeTab === 'activity' && <ActivityScreen />}
+                {activeTab === 'settings' && <SettingsScreen />}
+              </div>
+            )}
+          </>
         )}
       </main>
 

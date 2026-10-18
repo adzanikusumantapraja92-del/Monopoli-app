@@ -6,10 +6,35 @@ import {
   LedgerEntry, 
   ApprovalRequest, 
   PawnColor,
+  RequestType,
   VoteDecision
 } from '../types/monopoli';
 import { SIMULASI_INDONESIA_ASSETS } from '../data/mockIndonesianAssets';
 import { generateRoomCode } from '../utils/formatters';
+import { 
+  auth, 
+  db, 
+  isFirebaseConfigured, 
+  signInWithGoogle, 
+  signOutUser,
+  createGameInFirestore,
+  findGameByRoomCode,
+  joinGameInFirestore,
+  distributeInitialBalanceAtomic,
+  submitRequestToFirestore,
+  castVoteInFirestore
+} from '../services/firebase';
+import { 
+  onAuthStateChanged, 
+  User 
+} from 'firebase/auth';
+import { 
+  doc, 
+  collection, 
+  onSnapshot, 
+  query, 
+  orderBy 
+} from 'firebase/firestore';
 
 interface MonopoliContextType {
   room: GameRoom | null;
@@ -18,19 +43,33 @@ interface MonopoliContextType {
   transactions: LedgerEntry[];
   requests: ApprovalRequest[];
   currentMember: GameMember | null;
+  currentUser: User | null;
   isHost: boolean;
+  isLoading: boolean;
+  isFirebaseConfigured: boolean;
   activeTab: 'home' | 'assets' | 'requests' | 'activity' | 'settings';
   setActiveTab: (tab: 'home' | 'assets' | 'requests' | 'activity' | 'settings') => void;
-  createGame: (hostName: string, pawnColor: PawnColor, initialBalance: number, passStartReward: number, maxPlayers: number, catalogPreset: 'simulation_indonesia' | 'custom_blank') => void;
-  joinGame: (roomCode: string, playerName: string, pawnColor: PawnColor) => boolean;
-  startGame: () => void;
-  addSimulationMember: (name: string, pawnColor: PawnColor) => void;
-  castVote: (requestId: string, decision: 'approved' | 'rejected') => void;
-  submitRequest: (type: ApprovalRequest['type'], title: string, detail: string, amount: number, targetAssetId?: string) => void;
+  loginWithGoogle: () => Promise<void>;
+  logout: () => Promise<void>;
+  createGame: (
+    hostName: string, 
+    pawnColor: PawnColor, 
+    initialBalance: number, 
+    passStartReward: number, 
+    maxPlayers: number, 
+    catalogPreset: 'simulation_indonesia' | 'custom_blank'
+  ) => Promise<void>;
+  joinGame: (roomCode: string, playerName: string, pawnColor: PawnColor) => Promise<boolean>;
+  startGame: () => Promise<void>;
+  castVote: (requestId: string, decision: 'approved' | 'rejected') => Promise<void>;
+  submitRequest: (type: RequestType, title: string, detail: string, amount: number) => Promise<void>;
   resetGame: () => void;
 }
 
 const MonopoliContext = createContext<MonopoliContextType | undefined>(undefined);
+
+const LOCAL_STORAGE_ROOM_KEY = 'monopoli_bank_active_room_id';
+const LOCAL_STORAGE_PAWN_KEY = 'monopoli_bank_pawn_color';
 
 export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<'home' | 'assets' | 'requests' | 'activity' | 'settings'>('home');
@@ -39,13 +78,144 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [assets, setAssets] = useState<AssetItem[]>(SIMULASI_INDONESIA_ASSETS);
   const [transactions, setTransactions] = useState<LedgerEntry[]>([]);
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
-  const [currentMemberId, setCurrentMemberId] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const currentMember = members.find(m => m.uid === currentMemberId) || null;
+  // Fallback state for unconfigured Firebase environment
+  const [localRoomId, setLocalRoomId] = useState<string | null>(() => {
+    return localStorage.getItem(LOCAL_STORAGE_ROOM_KEY);
+  });
+
+  // Track Firebase Auth state
+  useEffect(() => {
+    if (!isFirebaseConfigured || !auth) {
+      setIsLoading(false);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Restore and subscribe to Firestore room when roomId and user are available
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db || !localRoomId) {
+      return;
+    }
+
+    const gameDocRef = doc(db, 'games', localRoomId);
+
+    // 1. Listen to Game Room doc
+    const unsubGame = onSnapshot(gameDocRef, (snap) => {
+      if (snap.exists()) {
+        setRoom(snap.data() as GameRoom);
+      } else {
+        // Room no longer exists
+        setRoom(null);
+        localStorage.removeItem(LOCAL_STORAGE_ROOM_KEY);
+      }
+    }, (error) => {
+      console.warn('Game listener error:', error);
+    });
+
+    // 2. Listen to Members subcollection
+    const membersColRef = collection(db, 'games', localRoomId, 'members');
+    const unsubMembers = onSnapshot(membersColRef, (snap) => {
+      const memberList: GameMember[] = [];
+      snap.forEach((docSnap) => {
+        memberList.push(docSnap.data() as GameMember);
+      });
+      // Sort so host is first, then by joinedAt
+      memberList.sort((a, b) => (b.isHost ? 1 : 0) - (a.isHost ? 1 : 0));
+      setMembers(memberList);
+    }, (error) => {
+      console.warn('Members listener error:', error);
+    });
+
+    // 3. Listen to Assets subcollection
+    const assetsColRef = collection(db, 'games', localRoomId, 'assets');
+    const unsubAssets = onSnapshot(assetsColRef, (snap) => {
+      if (!snap.empty) {
+        const assetList: AssetItem[] = [];
+        snap.forEach((docSnap) => {
+          assetList.push(docSnap.data() as AssetItem);
+        });
+        setAssets(assetList);
+      }
+    }, (error) => {
+      console.warn('Assets listener error:', error);
+    });
+
+    // 4. Listen to Transactions subcollection (Append-only Ledger)
+    const txColRef = query(
+      collection(db, 'games', localRoomId, 'transactions'),
+      orderBy('timestamp', 'desc')
+    );
+    const unsubTx = onSnapshot(txColRef, (snap) => {
+      const txList: LedgerEntry[] = [];
+      snap.forEach((docSnap) => {
+        txList.push(docSnap.data() as LedgerEntry);
+      });
+      setTransactions(txList);
+    }, (error) => {
+      console.warn('Transactions listener error:', error);
+    });
+
+    // 5. Listen to Consensus Requests subcollection
+    const reqColRef = query(
+      collection(db, 'games', localRoomId, 'requests'),
+      orderBy('createdAt', 'desc')
+    );
+    const unsubReq = onSnapshot(reqColRef, (snap) => {
+      const reqList: ApprovalRequest[] = [];
+      snap.forEach((docSnap) => {
+        reqList.push(docSnap.data() as ApprovalRequest);
+      });
+      setRequests(reqList);
+    }, (error) => {
+      console.warn('Requests listener error:', error);
+    });
+
+    return () => {
+      unsubGame();
+      unsubMembers();
+      unsubAssets();
+      unsubTx();
+      unsubReq();
+    };
+  }, [localRoomId]);
+
+  // Determine current member representation
+  const currentMember = members.find(m => {
+    if (currentUser) {
+      return m.uid === currentUser.uid;
+    }
+    return m.isHost;
+  }) || (members.length > 0 ? members[0] : null);
+
   const isHost = currentMember?.isHost ?? false;
 
-  // Create a new game room
-  const createGame = (
+  const loginWithGoogle = async () => {
+    try {
+      await signInWithGoogle();
+    } catch (error) {
+      console.error('Login error:', error);
+      alert('Gagal melakukan Google Sign-In. Pastikan konfigurasi Firebase Auth telah diaktifkan.');
+    }
+  };
+
+  const logout = async () => {
+    await signOutUser();
+    setCurrentUser(null);
+  };
+
+  // Create game room
+  const createGame = async (
     hostName: string, 
     pawnColor: PawnColor, 
     initialBalance: number, 
@@ -53,275 +223,241 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     maxPlayers: number,
     catalogPreset: 'simulation_indonesia' | 'custom_blank'
   ) => {
-    const roomId = 'room_' + Date.now();
-    const roomCode = generateRoomCode();
-    const hostUid = 'user_' + Date.now();
+    if (isFirebaseConfigured && db) {
+      // Ensure user is authenticated, or prompt login
+      let user = currentUser;
+      if (!user) {
+        user = await signInWithGoogle();
+        if (!user) return;
+      }
 
-    const hostMember: GameMember = {
-      uid: hostUid,
-      displayName: hostName || 'Pemain 1 (Host)',
-      pawnColor,
-      isHost: true,
-      balance: 0, // not distributed until started
-      isBankrupt: false,
-      joinedAt: Date.now(),
-      propertiesOwnedCount: 0,
-    };
+      const { gameId } = await createGameInFirestore(
+        {
+          uid: user.uid,
+          displayName: hostName || user.displayName || 'Host Permainan',
+          email: user.email || undefined,
+          photoURL: user.photoURL || undefined,
+        },
+        pawnColor,
+        {
+          initialBalance,
+          passStartReward,
+          maxPlayers,
+          catalogPreset,
+        }
+      );
 
-    const newRoom: GameRoom = {
-      id: roomId,
-      roomCode,
-      hostUid,
-      status: 'lobby',
-      createdAt: Date.now(),
-      settings: {
-        initialBalance,
-        passStartReward,
-        maxPlayers,
-        catalogPreset,
-        allowNegativeBalance: false,
-      },
-      initialBalanceDistributed: false,
-    };
+      localStorage.setItem(LOCAL_STORAGE_ROOM_KEY, gameId);
+      localStorage.setItem(LOCAL_STORAGE_PAWN_KEY, pawnColor);
+      setLocalRoomId(gameId);
+      setActiveTab('home');
+    } else {
+      // Safe preview state when Firebase unconfigured
+      const roomId = 'room_preview_' + Date.now();
+      const roomCode = generateRoomCode();
+      const mockHost: GameMember = {
+        uid: 'user_preview_host',
+        displayName: hostName || 'Pemain (Host)',
+        pawnColor,
+        isHost: true,
+        balance: 0,
+        isBankrupt: false,
+        joinedAt: Date.now(),
+        propertiesOwnedCount: 0,
+      };
 
-    // Initialize asset list based on catalog selection
-    const initialAssets: AssetItem[] = catalogPreset === 'simulation_indonesia' 
-      ? SIMULASI_INDONESIA_ASSETS.map(a => ({ ...a, ownerId: null, isMortgaged: false, housesCount: 0, hotelsCount: 0 }))
-      : [];
+      const newRoom: GameRoom = {
+        id: roomId,
+        roomCode,
+        hostUid: mockHost.uid,
+        status: 'lobby',
+        createdAt: Date.now(),
+        settings: {
+          initialBalance,
+          passStartReward,
+          maxPlayers,
+          catalogPreset,
+          allowNegativeBalance: false,
+        },
+        initialBalanceDistributed: false,
+      };
 
-    setRoom(newRoom);
-    setMembers([hostMember]);
-    setAssets(initialAssets);
-    setTransactions([]);
-    setRequests([]);
-    setCurrentMemberId(hostUid);
-    setActiveTab('home');
+      setRoom(newRoom);
+      setMembers([mockHost]);
+      setAssets(SIMULASI_INDONESIA_ASSETS);
+      setTransactions([]);
+      setRequests([]);
+      setActiveTab('home');
+    }
   };
 
   // Join existing game room
-  const joinGame = (roomCode: string, playerName: string, pawnColor: PawnColor): boolean => {
-    if (!room || room.roomCode.toUpperCase() !== roomCode.toUpperCase()) {
+  const joinGame = async (roomCode: string, playerName: string, pawnColor: PawnColor): Promise<boolean> => {
+    if (isFirebaseConfigured && db) {
+      let user = currentUser;
+      if (!user) {
+        user = await signInWithGoogle();
+        if (!user) return false;
+      }
+
+      const targetGame = await findGameByRoomCode(roomCode);
+      if (!targetGame) {
+        return false;
+      }
+
+      const success = await joinGameInFirestore(
+        targetGame.id,
+        {
+          uid: user.uid,
+          displayName: playerName || user.displayName || 'Pemain Baru',
+          email: user.email || undefined,
+          photoURL: user.photoURL || undefined,
+        },
+        pawnColor
+      );
+
+      if (success) {
+        localStorage.setItem(LOCAL_STORAGE_ROOM_KEY, targetGame.id);
+        localStorage.setItem(LOCAL_STORAGE_PAWN_KEY, pawnColor);
+        setLocalRoomId(targetGame.id);
+        setActiveTab('home');
+        return true;
+      }
       return false;
+    } else {
+      // Unconfigured fallback
+      if (!room || room.roomCode.toUpperCase() !== roomCode.toUpperCase()) {
+        return false;
+      }
+      const newMember: GameMember = {
+        uid: 'user_preview_' + Date.now(),
+        displayName: playerName || `Pemain ${members.length + 1}`,
+        pawnColor,
+        isHost: false,
+        balance: 0,
+        isBankrupt: false,
+        joinedAt: Date.now(),
+        propertiesOwnedCount: 0,
+      };
+      setMembers(prev => [...prev, newMember]);
+      return true;
     }
-
-    if (members.length >= room.settings.maxPlayers) {
-      return false;
-    }
-
-    const newUid = 'user_' + Date.now();
-    const newMember: GameMember = {
-      uid: newUid,
-      displayName: playerName || `Pemain ${members.length + 1}`,
-      pawnColor,
-      isHost: false,
-      balance: room.status === 'active' ? room.settings.initialBalance : 0,
-      isBankrupt: false,
-      joinedAt: Date.now(),
-      propertiesOwnedCount: 0,
-    };
-
-    setMembers(prev => [...prev, newMember]);
-    setCurrentMemberId(newUid);
-    return true;
   };
 
-  // Add simulated co-player (useful for demonstrating 2-8 multiplayer setup in lobby)
-  const addSimulationMember = (name: string, pawnColor: PawnColor) => {
-    if (!room || members.length >= room.settings.maxPlayers) return;
-    const simUid = 'sim_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
-    const newMember: GameMember = {
-      uid: simUid,
-      displayName: name,
-      pawnColor,
-      isHost: false,
-      balance: 0,
-      isBankrupt: false,
-      joinedAt: Date.now(),
-      propertiesOwnedCount: 0,
-    };
-    setMembers(prev => [...prev, newMember]);
-  };
+  // Start game with ATOMIC distribution and ledger logging
+  const startGame = async () => {
+    if (!room || room.status !== 'lobby') return;
 
-  // Start game: Exactly once atomic initial capital distribution
-  const startGame = () => {
-    if (!room || room.status !== 'lobby' || room.initialBalanceDistributed) return;
+    if (isFirebaseConfigured && db) {
+      try {
+        await distributeInitialBalanceAtomic(room.id);
+      } catch (err: any) {
+        alert('Gagal mendistribusikan modal awal: ' + (err?.message || 'Error'));
+      }
+    } else {
+      // Local preview distribution
+      const initialAmount = room.settings.initialBalance;
+      const timestamp = Date.now();
+      const ledger: LedgerEntry[] = [];
 
-    const initialAmount = room.settings.initialBalance;
-    const timestamp = Date.now();
-    const initialLedgerEntries: LedgerEntry[] = [];
+      const updatedMembers = members.map((m, idx) => {
+        ledger.push({
+          id: `TX-INIT-${room.roomCode}-${idx + 1}`,
+          gameId: room.id,
+          timestamp,
+          sourceId: 'BANK',
+          sourceName: 'Bank Monopoli Sentral',
+          targetId: m.uid,
+          targetName: m.displayName,
+          type: 'initial_capital',
+          amount: initialAmount,
+          status: 'settled',
+          description: `Pembagian modal awal permainan (${m.displayName})`,
+          referenceId: room.id,
+        });
 
-    // Distribute starting money to each player in room
-    const updatedMembers = members.map((member, index) => {
-      const txId = `TX-INIT-${room.roomCode}-${index + 1}`;
-      initialLedgerEntries.push({
-        id: txId,
-        gameId: room.id,
-        timestamp,
-        sourceId: 'BANK',
-        sourceName: 'Bank Monopoli Sentral',
-        targetId: member.uid,
-        targetName: member.displayName,
-        type: 'initial_capital',
-        amount: initialAmount,
-        status: 'settled',
-        description: `Pembagian modal awal permainan (${member.displayName})`,
-        referenceId: room.id,
+        return { ...m, balance: initialAmount };
       });
 
-      return {
-        ...member,
-        balance: initialAmount,
-      };
-    });
+      setRoom(prev => prev ? {
+        ...prev,
+        status: 'active',
+        startedAt: timestamp,
+        initialBalanceDistributed: true,
+      } : null);
 
-    // Sample initial demo approval request for physical event validation
-    const sampleRequest: ApprovalRequest = {
-      id: `REQ-${Date.now()}`,
-      gameId: room.id,
-      requesterId: updatedMembers[0].uid,
-      requesterName: updatedMembers[0].displayName,
-      type: 'claim_start',
-      title: 'Klaim Melewati Petak START',
-      detail: `${updatedMembers[0].displayName} mendarat/melewati petak START pada papan fisik.`,
-      amount: room.settings.passStartReward,
-      createdAt: Date.now(),
-      status: 'pending',
-      validators: updatedMembers.reduce((acc, m) => {
-        acc[m.uid] = {
-          uid: m.uid,
-          displayName: m.displayName,
-          // Requester auto-approves according to rule #4
-          decision: m.uid === updatedMembers[0].uid ? 'approved' : 'pending',
-          decidedAt: m.uid === updatedMembers[0].uid ? Date.now() : undefined,
-        };
-        return acc;
-      }, {} as ApprovalRequest['validators']),
-    };
-
-    setRoom(prev => prev ? {
-      ...prev,
-      status: 'active',
-      startedAt: timestamp,
-      initialBalanceDistributed: true,
-    } : null);
-
-    setMembers(updatedMembers);
-    setTransactions(initialLedgerEntries);
-    setRequests([sampleRequest]);
+      setMembers(updatedMembers);
+      setTransactions(ledger);
+      // NOTE: Removed automatic mock request per requirement #6
+      setRequests([]);
+    }
   };
 
-  // Submit new consensus request
-  const submitRequest = (
-    type: ApprovalRequest['type'],
+  // Submit consensus request
+  const submitRequest = async (
+    type: RequestType,
     title: string,
     detail: string,
-    amount: number,
-    targetAssetId?: string
+    amount: number
   ) => {
     if (!room || !currentMember) return;
 
-    const targetAsset = assets.find(a => a.id === targetAssetId);
-
-    const newRequest: ApprovalRequest = {
-      id: `REQ-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      gameId: room.id,
-      requesterId: currentMember.uid,
-      requesterName: currentMember.displayName,
-      type,
-      title,
-      detail,
-      amount,
-      targetAssetId,
-      targetAssetName: targetAsset?.name,
-      createdAt: Date.now(),
-      status: 'pending',
-      validators: members.reduce((acc, m) => {
-        acc[m.uid] = {
-          uid: m.uid,
-          displayName: m.displayName,
-          decision: m.uid === currentMember.uid ? 'approved' : 'pending',
-          decidedAt: m.uid === currentMember.uid ? Date.now() : undefined,
-        };
-        return acc;
-      }, {} as ApprovalRequest['validators']),
-    };
-
-    setRequests(prev => [newRequest, ...prev]);
+    if (isFirebaseConfigured && db) {
+      await submitRequestToFirestore(
+        room.id,
+        { uid: currentMember.uid, displayName: currentMember.displayName },
+        type,
+        title,
+        detail,
+        amount,
+        members
+      );
+    } else {
+      const newReq: ApprovalRequest = {
+        id: `REQ-${Date.now()}`,
+        gameId: room.id,
+        requesterId: currentMember.uid,
+        requesterName: currentMember.displayName,
+        type,
+        title,
+        detail,
+        amount,
+        createdAt: Date.now(),
+        status: 'pending',
+        validators: members.reduce((acc, m) => {
+          acc[m.uid] = {
+            uid: m.uid,
+            displayName: m.displayName,
+            decision: m.uid === currentMember.uid ? 'approved' : 'pending',
+            decidedAt: m.uid === currentMember.uid ? Date.now() : undefined,
+          };
+          return acc;
+        }, {} as ApprovalRequest['validators']),
+      };
+      setRequests(prev => [newReq, ...prev]);
+    }
   };
 
-  // Cast vote on a consensus request
-  const castVote = (requestId: string, decision: 'approved' | 'rejected') => {
+  // Cast consensus vote
+  const castVote = async (requestId: string, decision: 'approved' | 'rejected') => {
     if (!currentMember || !room) return;
 
-    setRequests(prev => prev.map(req => {
-      if (req.id !== requestId || req.status !== 'pending') return req;
-
-      const updatedValidators = {
-        ...req.validators,
-        [currentMember.uid]: {
-          ...req.validators[currentMember.uid],
-          decision,
-          decidedAt: Date.now(),
-        },
-      };
-
-      // Rule #4: 1 rejection terminates the request as rejected immediately
-      const hasRejection = Object.values(updatedValidators).some(v => v.decision === 'rejected');
-      if (hasRejection) {
-        return {
-          ...req,
-          validators: updatedValidators,
-          status: 'rejected' as const,
-          rejectionReason: `Ditolak oleh ${currentMember.displayName}`,
-        };
-      }
-
-      // Check if all active validators have approved
-      const allApproved = Object.values(updatedValidators).every(v => v.decision === 'approved');
-      if (allApproved) {
-        // Execute request atomically
-        if (req.type === 'claim_start') {
-          // Add ledger entry
-          const newTx: LedgerEntry = {
-            id: `TX-START-${Date.now()}`,
-            gameId: room.id,
-            timestamp: Date.now(),
-            sourceId: 'BANK',
-            sourceName: 'Bank Monopoli Sentral',
-            targetId: req.requesterId,
-            targetName: req.requesterName,
-            type: 'pass_start',
-            amount: req.amount,
-            status: 'settled',
-            description: `Hadiah melewati START (+${req.amount})`,
-          };
-          setTransactions(t => [newTx, ...t]);
-
-          // Update member balance
-          setMembers(mList => mList.map(m => m.uid === req.requesterId ? { ...m, balance: m.balance + req.amount } : m));
-        }
-
-        return {
-          ...req,
-          validators: updatedValidators,
-          status: 'approved' as const,
-        };
-      }
-
-      return {
-        ...req,
-        validators: updatedValidators,
-      };
-    }));
+    if (isFirebaseConfigured && db) {
+      await castVoteInFirestore(room.id, requestId, currentMember.uid, decision);
+    } else {
+      // In unconfigured mode, voting that alters balance is disabled per requirement #6
+      alert('Operasi konsensus multi-perangkat memerlukan integrasi Cloud Firestore aktif.');
+    }
   };
 
   const resetGame = () => {
+    localStorage.removeItem(LOCAL_STORAGE_ROOM_KEY);
+    setLocalRoomId(null);
     setRoom(null);
     setMembers([]);
     setAssets(SIMULASI_INDONESIA_ASSETS);
     setTransactions([]);
     setRequests([]);
-    setCurrentMemberId(null);
     setActiveTab('home');
   };
 
@@ -334,13 +470,17 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         transactions,
         requests,
         currentMember,
+        currentUser,
         isHost,
+        isLoading,
+        isFirebaseConfigured,
         activeTab,
         setActiveTab,
+        loginWithGoogle,
+        logout,
         createGame,
         joinGame,
         startGame,
-        addSimulationMember,
         castVote,
         submitRequest,
         resetGame,
