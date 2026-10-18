@@ -18,75 +18,51 @@ service cloud.firestore {
       return isSignedIn() && get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid;
     }
 
+    // Games collection
     match /games/{gameId} {
-      // Room lookup by roomCode or direct ID
-      allow read: if isSignedIn();
+      // Data reading is strictly bounded to members and host of the room
+      // Prospective members use the secure /api/rooms/lookup endpoint
+      allow read: if isMemberOf(gameId) || isHostOf(gameId);
 
-      // Host creates the game room
+      // Room creation by authenticated host
       allow create: if isSignedIn() 
         && request.resource.data.hostUid == request.auth.uid
         && request.resource.data.status == 'lobby'
         && request.resource.data.initialBalanceDistributed == false;
 
-      // Only host can start game or change room status
-      allow update: if isSignedIn() && (
-        (resource.data.hostUid == request.auth.uid && 
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'startedAt', 'initialBalanceDistributed']))
-        ||
-        // Joining updates member count
-        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['membersCount']))
-      );
+      // Direct client updates are blocked; mutations are handled via server.ts
+      allow update: if false;
+      allow delete: if false;
 
-      // Members subcollection
+      // Members subcollection: only room members/host can read
       match /members/{memberUid} {
-        allow read: if isSignedIn();
-
-        // Player registers their own seat with 0 initial balance
-        allow create: if isSignedIn() 
-          && request.auth.uid == memberUid 
-          && request.resource.data.uid == request.auth.uid
-          && request.resource.data.balance == 0;
-
-        // Disallow direct balance or asset manipulation from client
-        allow update: if false;
-        allow delete: if false;
+        allow read: if isMemberOf(gameId) || isHostOf(gameId);
+        // Direct client member modifications, balance edits, or deletions are forbidden
+        allow write: if false;
       }
 
-      // Assets catalog subcollection
+      // Assets catalog: only room members/host can read
       match /assets/{assetId} {
-        allow read: if isSignedIn();
-        // Initialized upon game creation by host or system
+        allow read: if isMemberOf(gameId) || isHostOf(gameId);
+        // Asset creation only during room initialization by host
         allow create: if isSignedIn() && isHostOf(gameId);
-        // Direct client ownership/mortgage modification is blocked
+        // Direct client ownership/mortgage modifications are blocked
         allow update: if false;
         allow delete: if false;
       }
 
-      // Transactions subcollection (Append-only Ledger)
+      // Append-only ledger transactions: only room members/host can read
       match /transactions/{txId} {
-        allow read: if isSignedIn();
-        // Client cannot create raw unverified transactions
-        allow create: if false;
-        allow update: if false;
-        allow delete: if false;
+        allow read: if isMemberOf(gameId) || isHostOf(gameId);
+        // Clients can NEVER create, edit, or delete financial records directly
+        allow write: if false;
       }
 
-      // Consensus approval requests
+      // Consensus approval requests: only room members/host can read
       match /requests/{requestId} {
-        allow read: if isSignedIn();
-
-        // Requester creates proposal
-        allow create: if isSignedIn() 
-          && isMemberOf(gameId) 
-          && request.resource.data.requesterId == request.auth.uid
-          && request.resource.data.status == 'pending';
-
-        // Member casts vote or system resolves
-        allow update: if isSignedIn() 
-          && isMemberOf(gameId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['validators', 'status', 'rejectionReason']);
-
-        allow delete: if false;
+        allow read: if isMemberOf(gameId) || isHostOf(gameId);
+        // All request submissions and voting are executed through trusted backend server
+        allow write: if false;
       }
     }
   }

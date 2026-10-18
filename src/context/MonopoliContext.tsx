@@ -18,11 +18,11 @@ import {
   signInWithGoogle, 
   signOutUser,
   createGameInFirestore,
-  findGameByRoomCode,
-  joinGameInFirestore,
-  distributeInitialBalanceAtomic,
-  submitRequestToFirestore,
-  castVoteInFirestore
+  lookupRoomByCode,
+  joinGameViaBackend,
+  distributeInitialBalanceViaBackend,
+  submitRequestViaBackend,
+  castVoteViaBackend
 } from '../services/firebase';
 import { 
   onAuthStateChanged, 
@@ -80,10 +80,9 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Fallback state for unconfigured Firebase environment
-  const [localRoomId, setLocalRoomId] = useState<string | null>(() => {
+  // Active room ID stored in localStorage for session restoration across refresh
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(() => {
     return localStorage.getItem(LOCAL_STORAGE_ROOM_KEY);
   });
 
@@ -102,43 +101,42 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => unsubscribe();
   }, []);
 
-  // Restore and subscribe to Firestore room when roomId and user are available
+  // Restore and attach real-time Firestore listeners when room ID is present
   useEffect(() => {
-    if (!isFirebaseConfigured || !db || !localRoomId) {
+    if (!isFirebaseConfigured || !db || !activeRoomId) {
       return;
     }
 
-    const gameDocRef = doc(db, 'games', localRoomId);
+    const gameDocRef = doc(db, 'games', activeRoomId);
 
     // 1. Listen to Game Room doc
     const unsubGame = onSnapshot(gameDocRef, (snap) => {
       if (snap.exists()) {
         setRoom(snap.data() as GameRoom);
       } else {
-        // Room no longer exists
         setRoom(null);
         localStorage.removeItem(LOCAL_STORAGE_ROOM_KEY);
+        setActiveRoomId(null);
       }
     }, (error) => {
-      console.warn('Game listener error:', error);
+      console.warn('Game room listener access error (membership required):', error);
     });
 
     // 2. Listen to Members subcollection
-    const membersColRef = collection(db, 'games', localRoomId, 'members');
+    const membersColRef = collection(db, 'games', activeRoomId, 'members');
     const unsubMembers = onSnapshot(membersColRef, (snap) => {
       const memberList: GameMember[] = [];
       snap.forEach((docSnap) => {
         memberList.push(docSnap.data() as GameMember);
       });
-      // Sort so host is first, then by joinedAt
       memberList.sort((a, b) => (b.isHost ? 1 : 0) - (a.isHost ? 1 : 0));
       setMembers(memberList);
     }, (error) => {
       console.warn('Members listener error:', error);
     });
 
-    // 3. Listen to Assets subcollection
-    const assetsColRef = collection(db, 'games', localRoomId, 'assets');
+    // 3. Listen to Assets subcollection (Single Source of Truth)
+    const assetsColRef = collection(db, 'games', activeRoomId, 'assets');
     const unsubAssets = onSnapshot(assetsColRef, (snap) => {
       if (!snap.empty) {
         const assetList: AssetItem[] = [];
@@ -153,7 +151,7 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     // 4. Listen to Transactions subcollection (Append-only Ledger)
     const txColRef = query(
-      collection(db, 'games', localRoomId, 'transactions'),
+      collection(db, 'games', activeRoomId, 'transactions'),
       orderBy('timestamp', 'desc')
     );
     const unsubTx = onSnapshot(txColRef, (snap) => {
@@ -168,7 +166,7 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     // 5. Listen to Consensus Requests subcollection
     const reqColRef = query(
-      collection(db, 'games', localRoomId, 'requests'),
+      collection(db, 'games', activeRoomId, 'requests'),
       orderBy('createdAt', 'desc')
     );
     const unsubReq = onSnapshot(reqColRef, (snap) => {
@@ -188,9 +186,9 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       unsubTx();
       unsubReq();
     };
-  }, [localRoomId]);
+  }, [activeRoomId]);
 
-  // Determine current member representation
+  // Identify current member in room
   const currentMember = members.find(m => {
     if (currentUser) {
       return m.uid === currentUser.uid;
@@ -214,7 +212,7 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setCurrentUser(null);
   };
 
-  // Create game room
+  // Host creates game room
   const createGame = async (
     hostName: string, 
     pawnColor: PawnColor, 
@@ -224,7 +222,6 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     catalogPreset: 'simulation_indonesia' | 'custom_blank'
   ) => {
     if (isFirebaseConfigured && db) {
-      // Ensure user is authenticated, or prompt login
       let user = currentUser;
       if (!user) {
         user = await signInWithGoogle();
@@ -249,10 +246,10 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       localStorage.setItem(LOCAL_STORAGE_ROOM_KEY, gameId);
       localStorage.setItem(LOCAL_STORAGE_PAWN_KEY, pawnColor);
-      setLocalRoomId(gameId);
+      setActiveRoomId(gameId);
       setActiveTab('home');
     } else {
-      // Safe preview state when Firebase unconfigured
+      // Local preview room (read-only financial mode)
       const roomId = 'room_preview_' + Date.now();
       const roomCode = generateRoomCode();
       const mockHost: GameMember = {
@@ -300,32 +297,25 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         if (!user) return false;
       }
 
-      const targetGame = await findGameByRoomCode(roomCode);
-      if (!targetGame) {
+      // 1. Secure lookup via backend
+      const lookupResult = await lookupRoomByCode(roomCode);
+      if (!lookupResult) {
         return false;
       }
 
-      const success = await joinGameInFirestore(
-        targetGame.id,
-        {
-          uid: user.uid,
-          displayName: playerName || user.displayName || 'Pemain Baru',
-          email: user.email || undefined,
-          photoURL: user.photoURL || undefined,
-        },
+      // 2. Atomic join via backend
+      await joinGameViaBackend(
+        lookupResult.gameId,
+        playerName || user.displayName || 'Pemain',
         pawnColor
       );
 
-      if (success) {
-        localStorage.setItem(LOCAL_STORAGE_ROOM_KEY, targetGame.id);
-        localStorage.setItem(LOCAL_STORAGE_PAWN_KEY, pawnColor);
-        setLocalRoomId(targetGame.id);
-        setActiveTab('home');
-        return true;
-      }
-      return false;
+      localStorage.setItem(LOCAL_STORAGE_ROOM_KEY, lookupResult.gameId);
+      localStorage.setItem(LOCAL_STORAGE_PAWN_KEY, pawnColor);
+      setActiveRoomId(lookupResult.gameId);
+      setActiveTab('home');
+      return true;
     } else {
-      // Unconfigured fallback
       if (!room || room.roomCode.toUpperCase() !== roomCode.toUpperCase()) {
         return false;
       }
@@ -344,52 +334,16 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  // Start game with ATOMIC distribution and ledger logging
+  // Start game: atomic server-side distribution and ledger generation
   const startGame = async () => {
     if (!room || room.status !== 'lobby') return;
 
     if (isFirebaseConfigured && db) {
-      try {
-        await distributeInitialBalanceAtomic(room.id);
-      } catch (err: any) {
-        alert('Gagal mendistribusikan modal awal: ' + (err?.message || 'Error'));
-      }
+      await distributeInitialBalanceViaBackend(room.id);
     } else {
-      // Local preview distribution
-      const initialAmount = room.settings.initialBalance;
-      const timestamp = Date.now();
-      const ledger: LedgerEntry[] = [];
-
-      const updatedMembers = members.map((m, idx) => {
-        ledger.push({
-          id: `TX-INIT-${room.roomCode}-${idx + 1}`,
-          gameId: room.id,
-          timestamp,
-          sourceId: 'BANK',
-          sourceName: 'Bank Monopoli Sentral',
-          targetId: m.uid,
-          targetName: m.displayName,
-          type: 'initial_capital',
-          amount: initialAmount,
-          status: 'settled',
-          description: `Pembagian modal awal permainan (${m.displayName})`,
-          referenceId: room.id,
-        });
-
-        return { ...m, balance: initialAmount };
-      });
-
-      setRoom(prev => prev ? {
-        ...prev,
-        status: 'active',
-        startedAt: timestamp,
-        initialBalanceDistributed: true,
-      } : null);
-
-      setMembers(updatedMembers);
-      setTransactions(ledger);
-      // NOTE: Removed automatic mock request per requirement #6
-      setRequests([]);
+      // Disabled in preview mode per user requirement:
+      // "Nonaktifkan tindakan finansial dalam mode preview tanpa backend."
+      alert('Tindakan finansial dinonaktifkan dalam mode preview tanpa backend. Harap konfigurasikan Firebase untuk memulai permainan multiplayer nyata.');
     }
   };
 
@@ -403,56 +357,32 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     if (!room || !currentMember) return;
 
     if (isFirebaseConfigured && db) {
-      await submitRequestToFirestore(
+      await submitRequestViaBackend(
         room.id,
-        { uid: currentMember.uid, displayName: currentMember.displayName },
         type,
         title,
         detail,
-        amount,
-        members
+        amount
       );
     } else {
-      const newReq: ApprovalRequest = {
-        id: `REQ-${Date.now()}`,
-        gameId: room.id,
-        requesterId: currentMember.uid,
-        requesterName: currentMember.displayName,
-        type,
-        title,
-        detail,
-        amount,
-        createdAt: Date.now(),
-        status: 'pending',
-        validators: members.reduce((acc, m) => {
-          acc[m.uid] = {
-            uid: m.uid,
-            displayName: m.displayName,
-            decision: m.uid === currentMember.uid ? 'approved' : 'pending',
-            decidedAt: m.uid === currentMember.uid ? Date.now() : undefined,
-          };
-          return acc;
-        }, {} as ApprovalRequest['validators']),
-      };
-      setRequests(prev => [newReq, ...prev]);
+      alert('Tindakan finansial dinonaktifkan dalam mode preview tanpa backend.');
     }
   };
 
-  // Cast consensus vote
+  // Cast consensus vote: verified by backend
   const castVote = async (requestId: string, decision: 'approved' | 'rejected') => {
     if (!currentMember || !room) return;
 
     if (isFirebaseConfigured && db) {
-      await castVoteInFirestore(room.id, requestId, currentMember.uid, decision);
+      await castVoteViaBackend(room.id, requestId, decision);
     } else {
-      // In unconfigured mode, voting that alters balance is disabled per requirement #6
-      alert('Operasi konsensus multi-perangkat memerlukan integrasi Cloud Firestore aktif.');
+      alert('Tindakan finansial dinonaktifkan dalam mode preview tanpa backend.');
     }
   };
 
   const resetGame = () => {
     localStorage.removeItem(LOCAL_STORAGE_ROOM_KEY);
-    setLocalRoomId(null);
+    setActiveRoomId(null);
     setRoom(null);
     setMembers([]);
     setAssets(SIMULASI_INDONESIA_ASSETS);

@@ -4,7 +4,6 @@ import {
   GoogleAuthProvider, 
   signInWithPopup, 
   signOut, 
-  onAuthStateChanged, 
   User,
   Auth
 } from 'firebase/auth';
@@ -12,25 +11,11 @@ import {
   getFirestore, 
   Firestore, 
   doc, 
-  getDoc, 
-  getDocs, 
   setDoc, 
-  updateDoc, 
-  collection, 
-  query, 
-  where, 
-  limit, 
-  onSnapshot, 
-  runTransaction, 
-  serverTimestamp,
-  orderBy
+  collection
 } from 'firebase/firestore';
 import { 
   GameRoom, 
-  GameMember, 
-  AssetItem, 
-  LedgerEntry, 
-  ApprovalRequest, 
   PawnColor, 
   RequestType, 
   VoteDecision 
@@ -115,6 +100,16 @@ export const auth = authInstance;
 export const db = dbInstance;
 
 /**
+ * Get JWT bearer token for backend server calls
+ */
+export async function getAuthToken(): Promise<string> {
+  if (!auth?.currentUser) {
+    throw new Error('Pengguna belum masuk dengan akun Google.');
+  }
+  return auth.currentUser.getIdToken();
+}
+
+/**
  * Google Sign-In with popup
  */
 export async function signInWithGoogle(): Promise<User | null> {
@@ -133,7 +128,7 @@ export async function signOutUser(): Promise<void> {
 }
 
 /**
- * Create Game Room on Cloud Firestore
+ * Create Game Room on Cloud Firestore & initialize catalog
  */
 export async function createGameInFirestore(
   hostUser: { uid: string; displayName: string; email?: string; photoURL?: string },
@@ -173,7 +168,7 @@ export async function createGameInFirestore(
       membersCount: 1,
     });
 
-    // 2. Add Host to members subcollection
+    // 2. Add Host to members subcollection (balance = 0 until atomic start by host)
     const hostMemberDoc = doc(db, 'games', gameId, 'members', hostUser.uid);
     await setDoc(hostMemberDoc, {
       uid: hostUser.uid,
@@ -182,7 +177,7 @@ export async function createGameInFirestore(
       avatarUrl: hostUser.photoURL || '',
       pawnColor,
       isHost: true,
-      balance: 0, // Not distributed until start
+      balance: 0,
       isBankrupt: false,
       joinedAt: Date.now(),
       propertiesOwnedCount: 0,
@@ -211,284 +206,154 @@ export async function createGameInFirestore(
   }
 }
 
-/**
- * Find room by unique room code (case-insensitive)
- */
-export async function findGameByRoomCode(roomCode: string): Promise<GameRoom | null> {
-  if (!db) return null;
-
-  try {
-    const q = query(
-      collection(db, 'games'),
-      where('roomCode', '==', roomCode.trim().toUpperCase()),
-      limit(1)
-    );
-    const snap = await getDocs(q);
-    if (snap.empty) return null;
-    const docData = snap.docs[0].data() as GameRoom;
-    return { ...docData, id: snap.docs[0].id };
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'games');
-    return null;
-  }
+export interface PublicRoomLookup {
+  gameId: string;
+  roomCode: string;
+  status: string;
+  maxPlayers: number;
+  membersCount: number;
+  catalogPreset?: string;
 }
 
 /**
- * Join game room
+ * Secure room lookup for prospective members:
+ * Calls /api/rooms/lookup so unauthenticated/prospective members don't need direct read on the room
  */
-export async function joinGameInFirestore(
+export async function lookupRoomByCode(roomCode: string): Promise<PublicRoomLookup | null> {
+  const res = await fetch('/api/rooms/lookup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ roomCode }),
+  });
+
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal mencari room.');
+  }
+
+  return res.json();
+}
+
+/**
+ * Join game room via trusted backend endpoint:
+ * Atomically validates lobby status, capacity, and UID identity
+ */
+export async function joinGameViaBackend(
   gameId: string,
-  user: { uid: string; displayName: string; email?: string; photoURL?: string },
+  displayName: string,
   pawnColor: PawnColor
 ): Promise<boolean> {
-  if (!db) return false;
+  const token = await getAuthToken();
 
-  const gameRef = doc(db, 'games', gameId);
-  const memberRef = doc(db, 'games', gameId, 'members', user.uid);
-
-  try {
-    const gameSnap = await getDoc(gameRef);
-    if (!gameSnap.exists()) return false;
-    const gameData = gameSnap.data() as GameRoom;
-
-    // Check if already a member (session restore)
-    const existingMember = await getDoc(memberRef);
-    if (existingMember.exists()) {
-      return true;
-    }
-
-    // Check if lobby is open
-    if (gameData.status !== 'lobby') {
-      throw new Error('Permainan sudah dimulai. Tidak dapat menambah pemain baru.');
-    }
-
-    // Get current members count
-    const membersSnap = await getDocs(collection(db, 'games', gameId, 'members'));
-    if (membersSnap.size >= gameData.settings.maxPlayers) {
-      throw new Error('Room sudah penuh.');
-    }
-
-    // Register new member
-    await setDoc(memberRef, {
-      uid: user.uid,
-      displayName: user.displayName || `Pemain ${membersSnap.size + 1}`,
-      email: user.email || '',
-      avatarUrl: user.photoURL || '',
+  const res = await fetch('/api/rooms/join', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      gameId,
+      displayName,
       pawnColor,
-      isHost: false,
-      balance: 0,
-      isBankrupt: false,
-      joinedAt: Date.now(),
-      propertiesOwnedCount: 0,
-    });
+    }),
+  });
 
-    await updateDoc(gameRef, {
-      membersCount: membersSnap.size + 1,
-    });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal bergabung ke room.');
+  }
 
-    return true;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `games/${gameId}/members/${user.uid}`);
-    return false;
+  return true;
+}
+
+/**
+ * Start game via trusted backend endpoint:
+ * Atomically checks status, reads all members, credits starting balance,
+ * and writes ledger records. Idempotent and rollback-safe.
+ */
+export async function distributeInitialBalanceViaBackend(gameId: string): Promise<void> {
+  const token = await getAuthToken();
+
+  const res = await fetch('/api/rooms/start', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ gameId }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal memulai permainan dan membagikan modal awal.');
   }
 }
 
 /**
- * Atomic Initial Balance Distribution via Firestore Transaction
- * Enforces requirement: Exactly once distribution + append-only ledger entries
+ * Submit consensus request via trusted backend endpoint
  */
-export async function distributeInitialBalanceAtomic(gameId: string): Promise<void> {
-  if (!db) {
-    throw new Error('Firestore tidak aktif.');
-  }
-
-  const gameRef = doc(db, 'games', gameId);
-  const membersCol = collection(db, 'games', gameId, 'members');
-
-  try {
-    await runTransaction(db, async (tx) => {
-      const gameSnap = await tx.get(gameRef);
-      if (!gameSnap.exists()) {
-        throw new Error('Room tidak ditemukan.');
-      }
-
-      const gameData = gameSnap.data() as GameRoom;
-      if (gameData.initialBalanceDistributed) {
-        throw new Error('Modal awal sudah pernah dibagikan! Tidak dapat menduplikasi.');
-      }
-      if (gameData.status !== 'lobby') {
-        throw new Error('Status room tidak valid untuk pembagian modal awal.');
-      }
-
-      const initialAmount = gameData.settings.initialBalance;
-      const membersSnap = await getDocs(membersCol);
-      const timestamp = Date.now();
-
-      // For each member: credit balance and write ledger entry
-      membersSnap.forEach((memberDoc) => {
-        const memberData = memberDoc.data() as GameMember;
-        tx.update(memberDoc.ref, {
-          balance: initialAmount,
-        });
-
-        const txRef = doc(db, 'games', gameId, 'transactions', `TX-INIT-${gameData.roomCode}-${memberData.uid}`);
-        tx.set(txRef, {
-          id: `TX-INIT-${gameData.roomCode}-${memberData.uid}`,
-          gameId,
-          timestamp,
-          sourceId: 'BANK',
-          sourceName: 'Bank Monopoli Sentral',
-          targetId: memberData.uid,
-          targetName: memberData.displayName,
-          type: 'initial_capital',
-          amount: initialAmount,
-          status: 'settled',
-          description: `Pembagian modal awal permainan (${memberData.displayName})`,
-          referenceId: gameId,
-        });
-      });
-
-      // Update game status to active
-      tx.update(gameRef, {
-        status: 'active',
-        startedAt: timestamp,
-        initialBalanceDistributed: true,
-      });
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `games/${gameId}/transaction`);
-    throw error;
-  }
-}
-
-/**
- * Submit consensus request to Firestore
- */
-export async function submitRequestToFirestore(
+export async function submitRequestViaBackend(
   gameId: string,
-  requester: { uid: string; displayName: string },
   type: RequestType,
   title: string,
   detail: string,
-  amount: number,
-  members: GameMember[]
+  amount: number
 ): Promise<string> {
-  if (!db) throw new Error('Firestore tidak aktif.');
+  const token = await getAuthToken();
 
-  const reqRef = doc(collection(db, 'games', gameId, 'requests'));
-  const requestId = reqRef.id;
-
-  const validators = members.reduce((acc, m) => {
-    acc[m.uid] = {
-      uid: m.uid,
-      displayName: m.displayName,
-      decision: m.uid === requester.uid ? 'approved' : 'pending',
-      decidedAt: m.uid === requester.uid ? Date.now() : undefined,
-    };
-    return acc;
-  }, {} as ApprovalRequest['validators']);
-
-  try {
-    await setDoc(reqRef, {
-      id: requestId,
+  const res = await fetch('/api/requests/create', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
       gameId,
-      requesterId: requester.uid,
-      requesterName: requester.displayName,
       type,
       title,
       detail,
       amount,
-      createdAt: Date.now(),
-      status: 'pending',
-      validators,
-    });
-    return requestId;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `games/${gameId}/requests/${requestId}`);
-    throw error;
+    }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal mengajukan permintaan.');
   }
+
+  const data = await res.json();
+  return data.requestId;
 }
 
 /**
- * Cast consensus vote on Firestore with atomic resolution
+ * Cast consensus vote via trusted backend endpoint:
+ * - Only UID owner can vote for their seat
+ * - 1 rejection immediately rejects
+ * - 100% consensus executes financial effect atomically before marking approved
  */
-export async function castVoteInFirestore(
+export async function castVoteViaBackend(
   gameId: string,
   requestId: string,
-  voterUid: string,
   decision: 'approved' | 'rejected'
 ): Promise<void> {
-  if (!db) throw new Error('Firestore tidak aktif.');
+  const token = await getAuthToken();
 
-  const reqRef = doc(db, 'games', gameId, 'requests', requestId);
+  const res = await fetch('/api/requests/vote', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      gameId,
+      requestId,
+      decision,
+    }),
+  });
 
-  try {
-    await runTransaction(db, async (tx) => {
-      const reqSnap = await tx.get(reqRef);
-      if (!reqSnap.exists()) throw new Error('Permintaan tidak ditemukan.');
-      const reqData = reqSnap.data() as ApprovalRequest;
-
-      if (reqData.status !== 'pending') {
-        throw new Error('Permintaan sudah selesai diproses.');
-      }
-
-      const updatedValidators = {
-        ...reqData.validators,
-        [voterUid]: {
-          ...reqData.validators[voterUid],
-          decision,
-          decidedAt: Date.now(),
-        },
-      };
-
-      if (decision === 'rejected') {
-        tx.update(reqRef, {
-          validators: updatedValidators,
-          status: 'rejected',
-          rejectionReason: `Ditolak oleh ${reqData.validators[voterUid]?.displayName || 'Validator'}`,
-        });
-        return;
-      }
-
-      const allApproved = Object.values(updatedValidators).every(v => v.decision === 'approved');
-      if (allApproved) {
-        tx.update(reqRef, {
-          validators: updatedValidators,
-          status: 'approved',
-        });
-
-        // Execute pass_start claim if approved
-        if (reqData.type === 'claim_start') {
-          const memberRef = doc(db, 'games', gameId, 'members', reqData.requesterId);
-          const memberSnap = await tx.get(memberRef);
-          if (memberSnap.exists()) {
-            const currentBal = memberSnap.data().balance || 0;
-            tx.update(memberRef, { balance: currentBal + reqData.amount });
-
-            const txRef = doc(db, 'games', gameId, 'transactions', `TX-START-${Date.now()}`);
-            tx.set(txRef, {
-              id: txRef.id,
-              gameId,
-              timestamp: Date.now(),
-              sourceId: 'BANK',
-              sourceName: 'Bank Monopoli Sentral',
-              targetId: reqData.requesterId,
-              targetName: reqData.requesterName,
-              type: 'pass_start',
-              amount: reqData.amount,
-              status: 'settled',
-              description: `Hadiah melewati START (+${reqData.amount})`,
-            });
-          }
-        }
-      } else {
-        tx.update(reqRef, {
-          validators: updatedValidators,
-        });
-      }
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `games/${gameId}/requests/${requestId}`);
-    throw error;
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal memproses suara.');
   }
 }
