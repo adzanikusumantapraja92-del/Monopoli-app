@@ -88,18 +88,21 @@ export function calculateRent(
 
   // Cek kelengkapan kelompok berdasarkan data aset dan pemilik aktual
   if (targetAsset.ownerId && groupId) {
-    const groupAssets = allAssets.filter(a => a.groupId === groupId && a.status === 'ready');
+    // 1. Ambil seluruh aset dalam kelompok tersebut (termasuk yang berstatus draft)
+    const allGroupAssets = allAssets.filter(a => a.groupId === groupId);
     const groupConfig = groupsConfig ? groupsConfig[groupId] : undefined;
     const isGroupConfirmed = groupConfig?.isConfirmed ?? false;
 
-    // Kelompok dianggap memiliki bonus set hanya jika:
-    // a. Minimal ada 1 aset di kelompok tersebut
-    // b. Kelompok telah dikonfirmasi host
-    // c. Seluruh aset di kelompok tersebut dimiliki oleh pemain yang sama
-    const hasAssets = groupAssets.length > 0;
-    const allOwnedBySamePlayer = hasAssets && groupAssets.every(a => a.ownerId === targetAsset.ownerId);
+    // Aturan Perhitungan Kelengkapan Set A-D:
+    // a. Minimal ada 1 aset di dalam kelompok
+    // b. Kelompok telah dikonfirmasi oleh host
+    // c. SELURUH aset dalam kelompok berstatus 'ready' (tidak boleh ada satupun yang 'draft')
+    // d. SELURUH aset dalam kelompok dimiliki oleh pemain yang sama (ownerId identik)
+    const hasAssets = allGroupAssets.length > 0;
+    const allMembersReady = hasAssets && allGroupAssets.every(a => a.status === 'ready');
+    const allOwnedBySamePlayer = hasAssets && allGroupAssets.every(a => a.ownerId === targetAsset.ownerId);
 
-    if (isGroupConfirmed && allOwnedBySamePlayer) {
+    if (isGroupConfirmed && allMembersReady && allOwnedBySamePlayer) {
       const multiplier = groupConfig?.rentMultiplier || 2;
       const boostedRent = baseRent * multiplier;
       return {

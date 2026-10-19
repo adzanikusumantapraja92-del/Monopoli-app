@@ -143,18 +143,18 @@ export const AssetsScreen: React.FC = () => {
     setEditingAssetId(asset.id);
     setFormData({
       name: asset.name,
-      boardPosition: asset.boardPosition ? String(asset.boardPosition) : '',
+      boardPosition: asset.boardPosition !== undefined && asset.boardPosition !== null ? String(asset.boardPosition) : '',
       groupId: asset.groupId || 'A',
-      buyPrice: String(asset.buyPrice || 0),
-      mortgageValue: String(asset.mortgageValue || 0),
-      rentBase: String(asset.rentBase || 0),
-      rentOneHouse: String(asset.rentOneHouse || 0),
-      rentTwoHouses: String(asset.rentTwoHouses || 0),
-      rentThreeHouses: String(asset.rentThreeHouses || 0),
-      rentFourHouses: String(asset.rentFourHouses || 0),
-      rentHotel: String(asset.rentHotel || 0),
-      houseCost: String(asset.houseCost || 0),
-      hotelCost: String(asset.hotelCost || 0),
+      buyPrice: asset.buyPrice !== undefined && asset.buyPrice !== null ? String(asset.buyPrice) : '',
+      mortgageValue: asset.mortgageValue !== undefined && asset.mortgageValue !== null ? String(asset.mortgageValue) : '',
+      rentBase: asset.rentBase !== undefined && asset.rentBase !== null ? String(asset.rentBase) : '',
+      rentOneHouse: asset.rentOneHouse !== undefined && asset.rentOneHouse !== null ? String(asset.rentOneHouse) : '',
+      rentTwoHouses: asset.rentTwoHouses !== undefined && asset.rentTwoHouses !== null ? String(asset.rentTwoHouses) : '',
+      rentThreeHouses: asset.rentThreeHouses !== undefined && asset.rentThreeHouses !== null ? String(asset.rentThreeHouses) : '',
+      rentFourHouses: asset.rentFourHouses !== undefined && asset.rentFourHouses !== null ? String(asset.rentFourHouses) : '',
+      rentHotel: asset.rentHotel !== undefined && asset.rentHotel !== null ? String(asset.rentHotel) : '',
+      houseCost: asset.houseCost !== undefined && asset.houseCost !== null ? String(asset.houseCost) : '',
+      hotelCost: asset.hotelCost !== undefined && asset.hotelCost !== null ? String(asset.hotelCost) : '',
       status: asset.status || 'ready',
     });
     setFormError('');
@@ -173,21 +173,68 @@ export const AssetsScreen: React.FC = () => {
       return;
     }
 
+    const isReady = formData.status === 'ready';
+
+    // Helper to validate and parse client input
+    const parseField = (val: string, label: string): number | null => {
+      const trimmed = val.trim();
+      if (trimmed === '') {
+        if (isReady) {
+          throw new Error(`Kolom ${label} wajib diisi dengan nominal nonnegatif untuk status 'Siap Digunakan'.`);
+        }
+        return null;
+      }
+      const num = Number(trimmed);
+      if (isNaN(num) || num < 0 || !Number.isInteger(num)) {
+        throw new Error(`Kolom ${label} harus berupa bilangan bulat nonnegatif.`);
+      }
+      return num;
+    };
+
+    let buyPrice = 0;
+    let mortgageValue = 0;
+    let rentBase = 0;
+    let rentOneHouse = 0;
+    let rentTwoHouses = 0;
+    let rentThreeHouses = 0;
+    let rentFourHouses = 0;
+    let rentHotel = 0;
+    let houseCost = 0;
+    let hotelCost = 0;
+
+    try {
+      buyPrice = parseField(formData.buyPrice, 'Harga Beli Tanah') ?? 0;
+      mortgageValue = parseField(formData.mortgageValue, 'Nilai Agunan / Hipotek') ?? 0;
+      rentBase = parseField(formData.rentBase, 'Sewa Tanah Kosong') ?? 0;
+      rentOneHouse = parseField(formData.rentOneHouse, 'Sewa 1 Rumah') ?? 0;
+      rentTwoHouses = parseField(formData.rentTwoHouses, 'Sewa 2 Rumah') ?? 0;
+      rentThreeHouses = parseField(formData.rentThreeHouses, 'Sewa 3 Rumah') ?? 0;
+      rentFourHouses = parseField(formData.rentFourHouses, 'Sewa 4 Rumah') ?? 0;
+      rentHotel = parseField(formData.rentHotel, 'Sewa Hotel') ?? 0;
+      houseCost = parseField(formData.houseCost, 'IMB per Rumah') ?? 0;
+      hotelCost = parseField(formData.hotelCost, 'IMB Hotel') ?? 0;
+    } catch (valErr: any) {
+      setFormError(valErr.message);
+      return;
+    }
+
     const payload: Partial<AssetItem> = {
       name: formData.name.trim(),
       groupId: formData.groupId,
-      boardPosition: formData.boardPosition ? Math.max(1, Math.round(Number(formData.boardPosition))) : undefined,
+      boardPosition: formData.boardPosition && formData.boardPosition.trim() !== '' 
+        ? Math.max(1, Math.round(Number(formData.boardPosition))) 
+        : undefined,
       category: 'property',
-      buyPrice: Math.max(0, Math.round(Number(formData.buyPrice) || 0)),
-      mortgageValue: Math.max(0, Math.round(Number(formData.mortgageValue) || 0)),
-      rentBase: Math.max(0, Math.round(Number(formData.rentBase) || 0)),
-      rentOneHouse: Math.max(0, Math.round(Number(formData.rentOneHouse) || 0)),
-      rentTwoHouses: Math.max(0, Math.round(Number(formData.rentTwoHouses) || 0)),
-      rentThreeHouses: Math.max(0, Math.round(Number(formData.rentThreeHouses) || 0)),
-      rentFourHouses: Math.max(0, Math.round(Number(formData.rentFourHouses) || 0)),
-      rentHotel: Math.max(0, Math.round(Number(formData.rentHotel) || 0)),
-      houseCost: Math.max(0, Math.round(Number(formData.houseCost) || 0)),
-      hotelCost: Math.max(0, Math.round(Number(formData.hotelCost) || 0)),
+      buyPrice,
+      mortgageValue,
+      rentBase,
+      rentOneHouse,
+      rentTwoHouses,
+      rentThreeHouses,
+      rentFourHouses,
+      rentHotel,
+      houseCost,
+      hotelCost,
       status: formData.status,
     };
 

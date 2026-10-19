@@ -116,15 +116,25 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
     const gameRef = adminDb.collection('games').doc();
     const gameId = gameRef.id;
 
-    // Generate unique room code
-    let roomCode = generateRoomCode();
-    const existingCode = await adminDb.collection('games').where('roomCode', '==', roomCode).limit(1).get();
-    if (!existingCode.empty) {
-      roomCode = generateRoomCode();
+    // Generate unique room code with collision prevention
+    let roomCode = '';
+    let isCodeUnique = false;
+    for (let attempts = 0; attempts < 10; attempts++) {
+      const candidate = generateRoomCode();
+      const existing = await adminDb.collection('games').where('roomCode', '==', candidate).limit(1).get();
+      if (existing.empty) {
+        roomCode = candidate;
+        isCodeUnique = true;
+        break;
+      }
+    }
+    if (!isCodeUnique || !roomCode) {
+      throw new Error('Gagal menghasilkan kode room unik. Silakan coba lagi.');
     }
 
     const hostMemberRef = gameRef.collection('members').doc(user.uid);
 
+    // Atomically create room and host member within transaction
     await adminDb.runTransaction(async (tx: Transaction) => {
       // 1. ALL READS FIRST
       const hostSnap = await tx.get(hostMemberRef);
@@ -170,21 +180,30 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
       });
     });
 
-    // Populate legacy simulation preset only if explicitly chosen
+    // Populate legacy simulation preset if explicitly chosen.
+    // If populating fails, delete the room so no partial/orphaned game room is left active.
     if (catalogPreset === 'simulation_indonesia_legacy') {
-      const batch = adminDb.batch();
-      for (const asset of PRESET_LEGACY_SIMULASI_ASSETS) {
-        const assetRef = gameRef.collection('assets').doc(asset.id);
-        batch.set(assetRef, {
-          ...asset,
-          ownerId: null,
-          isMortgaged: false,
-          housesCount: 0,
-          hotelsCount: 0,
-          createdAt: Date.now(),
-        });
+      try {
+        const batch = adminDb.batch();
+        for (const asset of PRESET_LEGACY_SIMULASI_ASSETS) {
+          const assetRef = gameRef.collection('assets').doc(asset.id);
+          batch.set(assetRef, {
+            ...asset,
+            ownerId: null,
+            isMortgaged: false,
+            housesCount: 0,
+            hotelsCount: 0,
+            createdAt: Date.now(),
+          });
+        }
+        await batch.commit();
+      } catch (legacyErr: any) {
+        console.error('Failed to populate legacy catalog, rolling back room:', legacyErr);
+        // Clean up room to avoid partial state
+        await gameRef.delete().catch(() => {});
+        await hostMemberRef.delete().catch(() => {});
+        throw new Error('Gagal menginisialisasi katalog preset legacy: ' + (legacyErr.message || 'Error'));
       }
-      await batch.commit();
     }
 
     res.json({ success: true, gameId, roomCode });
@@ -423,6 +442,97 @@ app.post('/api/rooms/start', requireAuth, async (req: AuthenticatedRequest, res:
 });
 
 /**
+ * Helper to validate property nominals
+ * - Distinguishes undefined/empty string/null from valid 0 (Rp0 is permitted if explicitly provided as a non-negative number)
+ * - In 'ready' status, all nominal fields are required to be non-negative integers
+ * - In 'draft' status, fields may be omitted/null, but if provided must be non-negative integers
+ */
+function parseNominalField(value: any, fieldLabel: string, isRequired: boolean): number | null {
+  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+    if (isRequired) {
+      throw new Error(`Kolom ${fieldLabel} wajib diisi dengan angka nonnegatif untuk status Siap (Ready).`);
+    }
+    return null;
+  }
+
+  const num = Number(value);
+  if (isNaN(num) || !isFinite(num) || num < 0 || !Number.isInteger(num)) {
+    throw new Error(`Kolom ${fieldLabel} harus berupa bilangan bulat (integer) nonnegatif.`);
+  }
+
+  return num;
+}
+
+function validateAndFormatProperty(raw: any): {
+  name: string;
+  groupId: 'A' | 'B' | 'C' | 'D';
+  boardPosition: number | null;
+  category: 'property';
+  buyPrice: number;
+  mortgageValue: number;
+  rentBase: number;
+  rentOneHouse: number;
+  rentTwoHouses: number;
+  rentThreeHouses: number;
+  rentFourHouses: number;
+  rentHotel: number;
+  houseCost: number;
+  hotelCost: number;
+  status: 'ready' | 'draft';
+} {
+  const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+  if (!name) {
+    throw new Error('Nama properti wajib diisi.');
+  }
+
+  const groupId = raw.groupId;
+  if (!['A', 'B', 'C', 'D'].includes(groupId)) {
+    throw new Error('Kelompok properti harus A, B, C, atau D.');
+  }
+
+  const status: 'ready' | 'draft' = raw.status === 'ready' ? 'ready' : 'draft';
+  const isRequiredForReady = status === 'ready';
+
+  let boardPosition: number | null = null;
+  if (raw.boardPosition !== undefined && raw.boardPosition !== null && raw.boardPosition !== '') {
+    const pos = Number(raw.boardPosition);
+    if (isNaN(pos) || pos < 1 || !Number.isInteger(pos)) {
+      throw new Error('Posisi petak harus berupa integer positif.');
+    }
+    boardPosition = pos;
+  }
+
+  const buyPrice = parseNominalField(raw.buyPrice, 'Harga Beli Tanah', isRequiredForReady) ?? 0;
+  const mortgageValue = parseNominalField(raw.mortgageValue, 'Nilai Agunan (Hipotek)', isRequiredForReady) ?? 0;
+  const rentBase = parseNominalField(raw.rentBase, 'Sewa Tanah Kosong', isRequiredForReady) ?? 0;
+  const rentOneHouse = parseNominalField(raw.rentOneHouse, 'Sewa 1 Rumah', isRequiredForReady) ?? 0;
+  const rentTwoHouses = parseNominalField(raw.rentTwoHouses, 'Sewa 2 Rumah', isRequiredForReady) ?? 0;
+  const rentThreeHouses = parseNominalField(raw.rentThreeHouses, 'Sewa 3 Rumah', isRequiredForReady) ?? 0;
+  const rentFourHouses = parseNominalField(raw.rentFourHouses, 'Sewa 4 Rumah', isRequiredForReady) ?? 0;
+  const rentHotel = parseNominalField(raw.rentHotel, 'Sewa Hotel', isRequiredForReady) ?? 0;
+  const houseCost = parseNominalField(raw.houseCost, 'IMB per Rumah', isRequiredForReady) ?? 0;
+  const hotelCost = parseNominalField(raw.hotelCost, 'IMB Hotel', isRequiredForReady) ?? 0;
+
+  return {
+    name,
+    groupId,
+    boardPosition,
+    category: 'property',
+    buyPrice,
+    mortgageValue,
+    rentBase,
+    rentOneHouse,
+    rentTwoHouses,
+    rentThreeHouses,
+    rentFourHouses,
+    rentHotel,
+    houseCost,
+    hotelCost,
+    status,
+  };
+}
+
+/**
  * 3a. POST /api/assets/create
  * Host creates property in catalog A, B, C, D during lobby
  */
@@ -430,13 +540,8 @@ app.post('/api/assets/create', requireAuth, async (req: AuthenticatedRequest, re
   const { gameId, property } = req.body;
   const user = req.user!;
 
-  if (!gameId || !property || !property.name || !property.groupId) {
-    res.status(400).json({ error: 'Data properti tidak lengkap (nama dan kelompok wajib diisi).' });
-    return;
-  }
-
-  if (!['A', 'B', 'C', 'D'].includes(property.groupId)) {
-    res.status(400).json({ error: 'Kelompok properti harus A, B, C, atau D.' });
+  if (!gameId || !property) {
+    res.status(400).json({ error: 'Data properti dan gameId wajib diisi.' });
     return;
   }
 
@@ -445,44 +550,16 @@ app.post('/api/assets/create', requireAuth, async (req: AuthenticatedRequest, re
     return;
   }
 
-  const gameRef = adminDb.collection('games').doc(gameId);
-
   try {
-    const gameSnap = await gameRef.get();
-    if (!gameSnap.exists) {
-      res.status(404).json({ error: 'Room tidak ditemukan.' });
-      return;
-    }
-    const gameData = gameSnap.data()!;
-    if (gameData.hostUid !== user.uid) {
-      res.status(403).json({ error: 'Hanya Host yang dapat mengelola katalog properti.' });
-      return;
-    }
-    if (gameData.status !== 'lobby') {
-      res.status(400).json({ error: 'Katalog hanya dapat diubah saat room berstatus Lobby.' });
-      return;
-    }
+    const formatted = validateAndFormatProperty(property);
+    const gameRef = adminDb.collection('games').doc(gameId);
 
-    const assetId = `prop-${property.groupId.toLowerCase()}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
+    const assetId = `prop-${formatted.groupId.toLowerCase()}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
     const assetRef = gameRef.collection('assets').doc(assetId);
 
     const newAsset = {
       id: assetId,
-      name: String(property.name).trim(),
-      groupId: property.groupId,
-      boardPosition: property.boardPosition ? Math.max(1, Math.round(Number(property.boardPosition))) : null,
-      category: 'property',
-      buyPrice: Math.max(0, Math.round(Number(property.buyPrice) || 0)),
-      mortgageValue: Math.max(0, Math.round(Number(property.mortgageValue) || 0)),
-      rentBase: Math.max(0, Math.round(Number(property.rentBase) || 0)),
-      rentOneHouse: Math.max(0, Math.round(Number(property.rentOneHouse) || 0)),
-      rentTwoHouses: Math.max(0, Math.round(Number(property.rentTwoHouses) || 0)),
-      rentThreeHouses: Math.max(0, Math.round(Number(property.rentThreeHouses) || 0)),
-      rentFourHouses: Math.max(0, Math.round(Number(property.rentFourHouses) || 0)),
-      rentHotel: Math.max(0, Math.round(Number(property.rentHotel) || 0)),
-      houseCost: Math.max(0, Math.round(Number(property.houseCost) || 0)),
-      hotelCost: Math.max(0, Math.round(Number(property.hotelCost) || 0)),
-      status: property.status === 'ready' ? 'ready' : 'draft',
+      ...formatted,
       ownerId: null,
       isMortgaged: false,
       housesCount: 0,
@@ -491,17 +568,51 @@ app.post('/api/assets/create', requireAuth, async (req: AuthenticatedRequest, re
       updatedAt: Date.now(),
     };
 
-    await assetRef.set(newAsset);
+    await adminDb.runTransaction(async (tx: Transaction) => {
+      // 1. ALL READS FIRST
+      const gameSnap = await tx.get(gameRef);
+      if (!gameSnap.exists) {
+        throw new Error('Room tidak ditemukan.');
+      }
+      const gameData = gameSnap.data()!;
+      if (gameData.hostUid !== user.uid) {
+        throw new Error('Hanya Host yang dapat mengelola katalog properti.');
+      }
+      if (gameData.status !== 'lobby') {
+        throw new Error('Katalog hanya dapat diubah saat room berstatus Lobby.');
+      }
+
+      // 2. UNCONFIRM AFFECTED GROUP
+      const currentGroups = gameData.groupsConfig || {
+        A: { id: 'A', label: 'Kelompok A', rentMultiplier: 2, isConfirmed: false },
+        B: { id: 'B', label: 'Kelompok B', rentMultiplier: 2, isConfirmed: false },
+        C: { id: 'C', label: 'Kelompok C', rentMultiplier: 2, isConfirmed: false },
+        D: { id: 'D', label: 'Kelompok D', rentMultiplier: 2, isConfirmed: false },
+      };
+
+      if (currentGroups[formatted.groupId]?.isConfirmed) {
+        currentGroups[formatted.groupId] = {
+          ...currentGroups[formatted.groupId],
+          isConfirmed: false,
+        };
+        tx.update(gameRef, { groupsConfig: currentGroups });
+      }
+
+      // 3. SET NEW ASSET
+      tx.set(assetRef, newAsset);
+    });
+
     res.json({ success: true, asset: newAsset });
   } catch (err: any) {
     console.error('Create asset error:', err);
-    res.status(500).json({ error: err.message || 'Gagal menyimpan properti.' });
+    res.status(400).json({ error: err.message || 'Gagal menyimpan properti.' });
   }
 });
 
 /**
  * 3b. POST /api/assets/update
- * Host edits property in catalog before game starts
+ * Host edits property in catalog before game starts.
+ * Unconfirms both previous and new group if groupId was changed.
  */
 app.post('/api/assets/update', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const { gameId, assetId, property } = req.body;
@@ -517,64 +628,79 @@ app.post('/api/assets/update', requireAuth, async (req: AuthenticatedRequest, re
     return;
   }
 
-  const gameRef = adminDb.collection('games').doc(gameId);
-  const assetRef = gameRef.collection('assets').doc(assetId);
-
   try {
-    const gameSnap = await gameRef.get();
-    if (!gameSnap.exists) {
-      res.status(404).json({ error: 'Room tidak ditemukan.' });
-      return;
-    }
-    const gameData = gameSnap.data()!;
-    if (gameData.hostUid !== user.uid) {
-      res.status(403).json({ error: 'Hanya Host yang dapat mengedit properti.' });
-      return;
-    }
-    if (gameData.status !== 'lobby') {
-      res.status(400).json({ error: 'Katalog tidak dapat diubah setelah permainan dimulai.' });
-      return;
-    }
-
-    const assetSnap = await assetRef.get();
-    if (!assetSnap.exists) {
-      res.status(404).json({ error: 'Properti tidak ditemukan.' });
-      return;
-    }
-    if (assetSnap.data()?.ownerId) {
-      res.status(400).json({ error: 'Properti yang sudah dimiliki pemain tidak dapat diedit.' });
-      return;
-    }
+    const formatted = validateAndFormatProperty(property);
+    const gameRef = adminDb.collection('games').doc(gameId);
+    const assetRef = gameRef.collection('assets').doc(assetId);
 
     const updatedData = {
-      name: String(property.name).trim(),
-      groupId: property.groupId || 'A',
-      boardPosition: property.boardPosition ? Math.max(1, Math.round(Number(property.boardPosition))) : null,
-      buyPrice: Math.max(0, Math.round(Number(property.buyPrice) || 0)),
-      mortgageValue: Math.max(0, Math.round(Number(property.mortgageValue) || 0)),
-      rentBase: Math.max(0, Math.round(Number(property.rentBase) || 0)),
-      rentOneHouse: Math.max(0, Math.round(Number(property.rentOneHouse) || 0)),
-      rentTwoHouses: Math.max(0, Math.round(Number(property.rentTwoHouses) || 0)),
-      rentThreeHouses: Math.max(0, Math.round(Number(property.rentThreeHouses) || 0)),
-      rentFourHouses: Math.max(0, Math.round(Number(property.rentFourHouses) || 0)),
-      rentHotel: Math.max(0, Math.round(Number(property.rentHotel) || 0)),
-      houseCost: Math.max(0, Math.round(Number(property.houseCost) || 0)),
-      hotelCost: Math.max(0, Math.round(Number(property.hotelCost) || 0)),
-      status: property.status === 'ready' ? 'ready' : 'draft',
+      ...formatted,
       updatedAt: Date.now(),
     };
 
-    await assetRef.update(updatedData);
+    await adminDb.runTransaction(async (tx: Transaction) => {
+      // 1. ALL READS FIRST
+      const gameSnap = await tx.get(gameRef);
+      if (!gameSnap.exists) {
+        throw new Error('Room tidak ditemukan.');
+      }
+      const gameData = gameSnap.data()!;
+      if (gameData.hostUid !== user.uid) {
+        throw new Error('Hanya Host yang dapat mengedit properti.');
+      }
+      if (gameData.status !== 'lobby') {
+        throw new Error('Katalog tidak dapat diubah setelah permainan dimulai.');
+      }
+
+      const assetSnap = await tx.get(assetRef);
+      if (!assetSnap.exists) {
+        throw new Error('Properti tidak ditemukan.');
+      }
+      const existingAsset = assetSnap.data()!;
+      if (existingAsset.ownerId) {
+        throw new Error('Properti yang sudah dimiliki pemain tidak dapat diedit.');
+      }
+
+      const oldGroupId: 'A' | 'B' | 'C' | 'D' = existingAsset.groupId || 'A';
+      const newGroupId = formatted.groupId;
+
+      // 2. UNCONFIRM AFFECTED GROUPS (both old and new group if moved)
+      const currentGroups = gameData.groupsConfig || {
+        A: { id: 'A', label: 'Kelompok A', rentMultiplier: 2, isConfirmed: false },
+        B: { id: 'B', label: 'Kelompok B', rentMultiplier: 2, isConfirmed: false },
+        C: { id: 'C', label: 'Kelompok C', rentMultiplier: 2, isConfirmed: false },
+        D: { id: 'D', label: 'Kelompok D', rentMultiplier: 2, isConfirmed: false },
+      };
+
+      let groupsChanged = false;
+      if (currentGroups[oldGroupId]?.isConfirmed) {
+        currentGroups[oldGroupId] = { ...currentGroups[oldGroupId], isConfirmed: false };
+        groupsChanged = true;
+      }
+      if (oldGroupId !== newGroupId && currentGroups[newGroupId]?.isConfirmed) {
+        currentGroups[newGroupId] = { ...currentGroups[newGroupId], isConfirmed: false };
+        groupsChanged = true;
+      }
+
+      if (groupsChanged) {
+        tx.update(gameRef, { groupsConfig: currentGroups });
+      }
+
+      // 3. UPDATE ASSET
+      tx.update(assetRef, updatedData);
+    });
+
     res.json({ success: true, asset: { id: assetId, ...updatedData } });
   } catch (err: any) {
     console.error('Update asset error:', err);
-    res.status(500).json({ error: err.message || 'Gagal memperbarui properti.' });
+    res.status(400).json({ error: err.message || 'Gagal memperbarui properti.' });
   }
 });
 
 /**
  * 3c. POST /api/assets/delete
- * Host deletes property from catalog before game starts
+ * Host deletes property from catalog before game starts.
+ * Unconfirms the group of the deleted asset.
  */
 app.post('/api/assets/delete', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const { gameId, assetId } = req.body;
@@ -594,42 +720,59 @@ app.post('/api/assets/delete', requireAuth, async (req: AuthenticatedRequest, re
   const assetRef = gameRef.collection('assets').doc(assetId);
 
   try {
-    const gameSnap = await gameRef.get();
-    if (!gameSnap.exists) {
-      res.status(404).json({ error: 'Room tidak ditemukan.' });
-      return;
-    }
-    const gameData = gameSnap.data()!;
-    if (gameData.hostUid !== user.uid) {
-      res.status(403).json({ error: 'Hanya Host yang dapat menghapus properti.' });
-      return;
-    }
-    if (gameData.status !== 'lobby') {
-      res.status(400).json({ error: 'Katalog tidak dapat diubah setelah permainan dimulai.' });
-      return;
-    }
+    await adminDb.runTransaction(async (tx: Transaction) => {
+      // 1. ALL READS FIRST
+      const gameSnap = await tx.get(gameRef);
+      if (!gameSnap.exists) {
+        throw new Error('Room tidak ditemukan.');
+      }
+      const gameData = gameSnap.data()!;
+      if (gameData.hostUid !== user.uid) {
+        throw new Error('Hanya Host yang dapat menghapus properti.');
+      }
+      if (gameData.status !== 'lobby') {
+        throw new Error('Katalog tidak dapat diubah setelah permainan dimulai.');
+      }
 
-    const assetSnap = await assetRef.get();
-    if (!assetSnap.exists) {
-      res.status(404).json({ error: 'Properti tidak ditemukan.' });
-      return;
-    }
-    if (assetSnap.data()?.ownerId) {
-      res.status(400).json({ error: 'Properti yang sudah dimiliki pemain tidak dapat dihapus.' });
-      return;
-    }
+      const assetSnap = await tx.get(assetRef);
+      if (!assetSnap.exists) {
+        throw new Error('Properti tidak ditemukan.');
+      }
+      const assetData = assetSnap.data()!;
+      if (assetData.ownerId) {
+        throw new Error('Properti yang sudah dimiliki pemain tidak dapat dihapus.');
+      }
 
-    await assetRef.delete();
-    res.json({ success: true, message: 'Properti berhasil dihapus.' });
+      const targetGroupId: 'A' | 'B' | 'C' | 'D' = assetData.groupId || 'A';
+
+      // 2. UNCONFIRM AFFECTED GROUP
+      const currentGroups = gameData.groupsConfig || {
+        A: { id: 'A', label: 'Kelompok A', rentMultiplier: 2, isConfirmed: false },
+        B: { id: 'B', label: 'Kelompok B', rentMultiplier: 2, isConfirmed: false },
+        C: { id: 'C', label: 'Kelompok C', rentMultiplier: 2, isConfirmed: false },
+        D: { id: 'D', label: 'Kelompok D', rentMultiplier: 2, isConfirmed: false },
+      };
+
+      if (currentGroups[targetGroupId]?.isConfirmed) {
+        currentGroups[targetGroupId] = { ...currentGroups[targetGroupId], isConfirmed: false };
+        tx.update(gameRef, { groupsConfig: currentGroups });
+      }
+
+      // 3. DELETE ASSET
+      tx.delete(assetRef);
+    });
+
+    res.json({ success: true, message: 'Properti berhasil dihapus dan status konfirmasi kelompok disinkronkan.' });
   } catch (err: any) {
     console.error('Delete asset error:', err);
-    res.status(500).json({ error: err.message || 'Gagal menghapus properti.' });
+    res.status(400).json({ error: err.message || 'Gagal menghapus properti.' });
   }
 });
 
 /**
  * 3d. POST /api/rooms/confirm-group
- * Host confirms or unconfirms group A/B/C/D completeness
+ * Host confirms or unconfirms group A/B/C/D completeness.
+ * Strictly prevents confirmation if the group has 0 properties or has any draft properties.
  */
 app.post('/api/rooms/confirm-group', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const { gameId, groupId, isConfirmed } = req.body;
@@ -663,6 +806,35 @@ app.post('/api/rooms/confirm-group', requireAuth, async (req: AuthenticatedReque
       return;
     }
 
+    const wantToConfirm = Boolean(isConfirmed);
+
+    // If host wants to confirm the group, inspect group properties
+    if (wantToConfirm) {
+      const assetsSnap = await gameRef.collection('assets').where('groupId', '==', groupId).get();
+
+      if (assetsSnap.empty) {
+        res.status(400).json({ 
+          error: `Kelompok ${groupId} tidak dapat dikonfirmasi karena belum memiliki properti sama sekali. Tambahkan minimal 1 properti.` 
+        });
+        return;
+      }
+
+      const draftAssets: string[] = [];
+      assetsSnap.forEach((docSnap) => {
+        const item = docSnap.data();
+        if (item.status === 'draft') {
+          draftAssets.push(item.name || docSnap.id);
+        }
+      });
+
+      if (draftAssets.length > 0) {
+        res.status(400).json({
+          error: `Kelompok ${groupId} belum dapat dikonfirmasi karena masih memiliki ${draftAssets.length} properti berstatus draft: (${draftAssets.slice(0, 3).join(', ')}${draftAssets.length > 3 ? '...' : ''}). Selesaikan kelengkapan data properti menjadi 'Siap' terlebih dahulu.`
+        });
+        return;
+      }
+    }
+
     const currentGroups = gameData.groupsConfig || {
       A: { id: 'A', label: 'Kelompok A', rentMultiplier: 2, isConfirmed: false },
       B: { id: 'B', label: 'Kelompok B', rentMultiplier: 2, isConfirmed: false },
@@ -672,7 +844,7 @@ app.post('/api/rooms/confirm-group', requireAuth, async (req: AuthenticatedReque
 
     currentGroups[groupId] = {
       ...currentGroups[groupId],
-      isConfirmed: Boolean(isConfirmed),
+      isConfirmed: wantToConfirm,
     };
 
     await gameRef.update({
