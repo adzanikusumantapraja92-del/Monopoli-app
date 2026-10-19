@@ -127,9 +127,11 @@ export async function createGameViaBackend(
     passStartReward: number;
     maxPlayers: number;
     catalogPreset: 'custom_abcd' | 'simulation_indonesia_legacy';
-  }
+  },
+  idempotencyKey?: string
 ): Promise<{ gameId: string; roomCode: string }> {
   const token = await getAuthToken();
+  const key = idempotencyKey || `idemp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
   const res = await fetch('/api/rooms/create', {
     method: 'POST',
@@ -144,6 +146,7 @@ export async function createGameViaBackend(
       passStartReward: settings.passStartReward,
       maxPlayers: settings.maxPlayers,
       catalogPreset: settings.catalogPreset,
+      idempotencyKey: key,
     }),
   });
 

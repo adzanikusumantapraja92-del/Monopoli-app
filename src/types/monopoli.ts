@@ -61,18 +61,18 @@ export interface AssetItem {
   name: string;
   groupId: GroupId;
   group?: ColorGroup | string; // legacy support
-  boardPosition?: number;
+  boardPosition?: number | null;
   category: AssetCategory;
-  buyPrice: number;
-  mortgageValue: number;
-  rentBase: number;
-  rentOneHouse: number;
-  rentTwoHouses: number;
-  rentThreeHouses: number;
-  rentFourHouses: number;
-  rentHotel: number;
-  houseCost: number; // IMB per rumah
-  hotelCost: number; // IMB hotel
+  buyPrice: number | null;
+  mortgageValue: number | null;
+  rentBase: number | null;
+  rentOneHouse: number | null;
+  rentTwoHouses: number | null;
+  rentThreeHouses: number | null;
+  rentFourHouses: number | null;
+  rentHotel: number | null;
+  houseCost: number | null; // IMB per rumah
+  hotelCost: number | null; // IMB hotel
   status: PropertyStatus;
   // Dynamic state
   ownerId: string | null;

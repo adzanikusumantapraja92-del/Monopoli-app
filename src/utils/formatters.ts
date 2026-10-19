@@ -4,9 +4,9 @@ import { PawnColor } from '../types/monopoli';
  * Format integer into standard Indonesian Rupiah format: 'Rp1.500.000'
  * Strict integer, no decimals.
  */
-export function formatRupiah(amount: number): string {
-  if (isNaN(amount) || amount === null || amount === undefined) {
-    return 'Rp0';
+export function formatRupiah(amount: number | null | undefined, emptyLabel: string = '-'): string {
+  if (amount === null || amount === undefined || isNaN(amount)) {
+    return emptyLabel;
   }
   const rounded = Math.round(amount);
   const formatted = new Intl.NumberFormat('id-ID', {
@@ -23,7 +23,10 @@ export function formatRupiah(amount: number): string {
 /**
  * Short representation for mobile summaries, e.g. Rp15 Jt
  */
-export function formatRupiahShort(amount: number): string {
+export function formatRupiahShort(amount: number | null | undefined, emptyLabel: string = '-'): string {
+  if (amount === null || amount === undefined || isNaN(amount)) {
+    return emptyLabel;
+  }
   const rounded = Math.round(amount);
   if (Math.abs(rounded) >= 1_000_000) {
     const jt = (rounded / 1_000_000).toFixed(1).replace('.0', '');
@@ -33,7 +36,7 @@ export function formatRupiahShort(amount: number): string {
     const rb = (rounded / 1_000).toFixed(0);
     return `Rp${rb} Rb`;
   }
-  return formatRupiah(rounded);
+  return formatRupiah(rounded, emptyLabel);
 }
 
 /**

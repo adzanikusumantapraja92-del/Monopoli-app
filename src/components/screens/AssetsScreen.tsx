@@ -191,28 +191,28 @@ export const AssetsScreen: React.FC = () => {
       return num;
     };
 
-    let buyPrice = 0;
-    let mortgageValue = 0;
-    let rentBase = 0;
-    let rentOneHouse = 0;
-    let rentTwoHouses = 0;
-    let rentThreeHouses = 0;
-    let rentFourHouses = 0;
-    let rentHotel = 0;
-    let houseCost = 0;
-    let hotelCost = 0;
+    let buyPrice: number | null = null;
+    let mortgageValue: number | null = null;
+    let rentBase: number | null = null;
+    let rentOneHouse: number | null = null;
+    let rentTwoHouses: number | null = null;
+    let rentThreeHouses: number | null = null;
+    let rentFourHouses: number | null = null;
+    let rentHotel: number | null = null;
+    let houseCost: number | null = null;
+    let hotelCost: number | null = null;
 
     try {
-      buyPrice = parseField(formData.buyPrice, 'Harga Beli Tanah') ?? 0;
-      mortgageValue = parseField(formData.mortgageValue, 'Nilai Agunan / Hipotek') ?? 0;
-      rentBase = parseField(formData.rentBase, 'Sewa Tanah Kosong') ?? 0;
-      rentOneHouse = parseField(formData.rentOneHouse, 'Sewa 1 Rumah') ?? 0;
-      rentTwoHouses = parseField(formData.rentTwoHouses, 'Sewa 2 Rumah') ?? 0;
-      rentThreeHouses = parseField(formData.rentThreeHouses, 'Sewa 3 Rumah') ?? 0;
-      rentFourHouses = parseField(formData.rentFourHouses, 'Sewa 4 Rumah') ?? 0;
-      rentHotel = parseField(formData.rentHotel, 'Sewa Hotel') ?? 0;
-      houseCost = parseField(formData.houseCost, 'IMB per Rumah') ?? 0;
-      hotelCost = parseField(formData.hotelCost, 'IMB Hotel') ?? 0;
+      buyPrice = parseField(formData.buyPrice, 'Harga Beli Tanah');
+      mortgageValue = parseField(formData.mortgageValue, 'Nilai Agunan / Hipotek');
+      rentBase = parseField(formData.rentBase, 'Sewa Tanah Kosong');
+      rentOneHouse = parseField(formData.rentOneHouse, 'Sewa 1 Rumah');
+      rentTwoHouses = parseField(formData.rentTwoHouses, 'Sewa 2 Rumah');
+      rentThreeHouses = parseField(formData.rentThreeHouses, 'Sewa 3 Rumah');
+      rentFourHouses = parseField(formData.rentFourHouses, 'Sewa 4 Rumah');
+      rentHotel = parseField(formData.rentHotel, 'Sewa Hotel');
+      houseCost = parseField(formData.houseCost, 'IMB per Rumah');
+      hotelCost = parseField(formData.hotelCost, 'IMB Hotel');
     } catch (valErr: any) {
       setFormError(valErr.message);
       return;
@@ -223,7 +223,7 @@ export const AssetsScreen: React.FC = () => {
       groupId: formData.groupId,
       boardPosition: formData.boardPosition && formData.boardPosition.trim() !== '' 
         ? Math.max(1, Math.round(Number(formData.boardPosition))) 
-        : undefined,
+        : null,
       category: 'property',
       buyPrice,
       mortgageValue,
@@ -718,7 +718,7 @@ export const AssetsScreen: React.FC = () => {
                     <span className="font-semibold text-slate-800">{formatRupiah(selectedAsset.hotelCost)}</span>
                   </div>
                   <p className="text-[10px] text-slate-400 italic mt-1 leading-snug">
-                    *Sewa tanah kosong berlipat 2× ({formatRupiah(selectedAsset.rentBase * 2)}) jika seluruh properti di Kelompok {selectedAsset.groupId} dimiliki oleh pemain yang sama dan kelompok telah dikonfirmasi lengkap.
+                    *Sewa tanah kosong berlipat 2× ({selectedAsset.rentBase !== null && selectedAsset.rentBase !== undefined ? formatRupiah(selectedAsset.rentBase * 2) : '-'}) jika seluruh properti di Kelompok {selectedAsset.groupId} dimiliki oleh pemain yang sama dan kelompok telah dikonfirmasi lengkap.
                   </p>
                 </div>
 
