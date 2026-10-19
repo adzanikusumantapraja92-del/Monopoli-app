@@ -148,11 +148,14 @@ export interface ApprovalRequest {
   rejectionReason?: string;
 }
 
+export type RoomInitStatus = 'initializing' | 'ready' | 'failed';
+
 export interface GameRoom {
   id: string;
   roomCode: string;
   hostUid: string;
   status: GameStatus;
+  initStatus?: RoomInitStatus;
   createdAt: number;
   startedAt?: number;
   settings: {

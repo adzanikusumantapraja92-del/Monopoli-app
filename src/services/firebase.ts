@@ -131,31 +131,66 @@ export async function createGameViaBackend(
   idempotencyKey?: string
 ): Promise<{ gameId: string; roomCode: string }> {
   const token = await getAuthToken();
+  // Preserve identical idempotency key for this single creation process
   const key = idempotencyKey || `idemp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-  const res = await fetch('/api/rooms/create', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      displayName: hostUser.displayName,
-      pawnColor,
-      initialBalance: settings.initialBalance,
-      passStartReward: settings.passStartReward,
-      maxPlayers: settings.maxPlayers,
-      catalogPreset: settings.catalogPreset,
-      idempotencyKey: key,
-    }),
-  });
+  const maxAttempts = 3;
+  let lastError: any = null;
 
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || 'Gagal membuat room permainan.');
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timeoutTimer = setTimeout(() => controller.abort(), 15000); // 15 seconds timeout
+
+    try {
+      const res = await fetch('/api/rooms/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          displayName: hostUser.displayName,
+          pawnColor,
+          initialBalance: settings.initialBalance,
+          passStartReward: settings.passStartReward,
+          maxPlayers: settings.maxPlayers,
+          catalogPreset: settings.catalogPreset,
+          idempotencyKey: key, // PRESERVED ACROSS TIMEOUT RETRIES
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutTimer);
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        // If 409 (room still initializing), retry with the exact same key
+        if (res.status === 409 && attempt < maxAttempts) {
+          console.warn(`Room creation in progress (attempt ${attempt}/${maxAttempts}). Retrying with same key...`);
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
+        }
+        throw new Error(errData.error || 'Gagal membuat room permainan.');
+      }
+
+      return await res.json();
+    } catch (err: any) {
+      clearTimeout(timeoutTimer);
+      lastError = err;
+      const isAbortOrTimeout = err.name === 'AbortError' || err.message?.toLowerCase().includes('timeout') || err.message?.toLowerCase().includes('aborted');
+      const isNetwork = err instanceof TypeError || err.message?.toLowerCase().includes('failed to fetch') || err.message?.toLowerCase().includes('network');
+
+      // Retry automatically with the SAME idempotency key on timeout or network glitch
+      if ((isAbortOrTimeout || isNetwork) && attempt < maxAttempts) {
+        console.warn(`Room creation retry (attempt ${attempt}/${maxAttempts}) after timeout/network error using key ${key}`);
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+        continue;
+      }
+
+      throw new Error(isAbortOrTimeout ? 'Permintaan pembuatan room timeout. Silakan periksa koneksi Anda.' : (err.message || 'Gagal membuat room.'));
+    }
   }
 
-  return res.json();
+  throw lastError || new Error('Gagal membuat room permainan setelah percobaan ulang.');
 }
 
 /**

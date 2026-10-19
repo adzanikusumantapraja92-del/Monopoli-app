@@ -95,33 +95,59 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
 // ==========================================
 
 /**
- * Comprehensive rollback helper to prevent orphaned rooms, members, assets, reservations, or idempotency keys
+ * Comprehensive rollback helper to prevent orphaned rooms, members, assets, reservations, or idempotency keys.
+ * ONLY deletes failed initialization attempts; aborts if room is already ready or in use.
  */
 async function cleanupOrphanedGame(gameId: string, roomCode?: string, hostUid?: string, idempotencyKey?: string) {
   if (!adminDb || !gameId) return;
   try {
     const gameRef = adminDb.collection('games').doc(gameId);
+    const gameSnap = await gameRef.get();
 
-    // 1. Delete all assets in subcollection
+    // 1. SAFETY GUARD: NEVER delete a room that was successfully initialized or is already in use
+    if (gameSnap.exists) {
+      const gData = gameSnap.data();
+      if (gData?.initStatus === 'ready' || gData?.status === 'active' || gData?.status === 'finished') {
+        console.warn(`Safety guard: cleanupOrphanedGame aborted. Room ${gameId} is ready/active (initStatus: ${gData?.initStatus}).`);
+        return;
+      }
+    }
+
+    // 2. Mark initStatus as failed first so concurrent checks know it was terminated
+    try {
+      await gameRef.update({ initStatus: 'failed' });
+    } catch {
+      // ignore update error if doc missing
+    }
+
+    // 3. Delete all assets in subcollection
     const assetsSnap = await gameRef.collection('assets').get();
     const batch = adminDb.batch();
     assetsSnap.forEach((docSnap) => batch.delete(docSnap.ref));
 
-    // 2. Delete all members in subcollection
+    // 4. Delete all members in subcollection
     const membersSnap = await gameRef.collection('members').get();
     membersSnap.forEach((docSnap) => batch.delete(docSnap.ref));
 
-    // 3. Delete room document
+    // 5. Delete room document
     batch.delete(gameRef);
 
-    // 4. Delete room code reservation
+    // 6. Delete room code reservation ONLY if it belongs to this specific failed gameId
     if (roomCode) {
-      batch.delete(adminDb.collection('room_codes').doc(roomCode));
+      const codeRef = adminDb.collection('room_codes').doc(roomCode);
+      const codeSnap = await codeRef.get();
+      if (codeSnap.exists && codeSnap.data()?.gameId === gameId) {
+        batch.delete(codeRef);
+      }
     }
 
-    // 5. Delete idempotency record if present
+    // 7. Delete idempotency record ONLY if it belongs to this specific failed gameId
     if (idempotencyKey && hostUid) {
-      batch.delete(adminDb.collection('room_idempotency').doc(`${hostUid}_${idempotencyKey}`));
+      const idempRef = adminDb.collection('room_idempotency').doc(`${hostUid}_${idempotencyKey}`);
+      const idempSnap = await idempRef.get();
+      if (idempSnap.exists && idempSnap.data()?.gameId === gameId) {
+        batch.delete(idempRef);
+      }
     }
 
     await batch.commit();
@@ -171,8 +197,35 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
       const existingIdemp = await idempDocRef.get();
       if (existingIdemp.exists) {
         const idData = existingIdemp.data()!;
-        res.json({ success: true, gameId: idData.gameId, roomCode: idData.roomCode, idempotent: true });
-        return;
+        if (idData.initStatus === 'ready') {
+          res.json({ success: true, gameId: idData.gameId, roomCode: idData.roomCode, idempotent: true });
+          return;
+        } else if (idData.initStatus === 'initializing') {
+          // Poll for completion (up to 8 seconds) so parallel requests / retries don't receive an incomplete room
+          let ready = false;
+          for (let p = 0; p < 16; p++) {
+            await new Promise((r) => setTimeout(r, 500));
+            const gSnap = await adminDb.collection('games').doc(idData.gameId).get();
+            if (gSnap.exists) {
+              const gData = gSnap.data();
+              if (gData?.initStatus === 'ready') {
+                ready = true;
+                break;
+              } else if (gData?.initStatus === 'failed') {
+                throw new Error('Inisialisasi room sebelumnya gagal. Silakan coba lagi.');
+              }
+            } else {
+              break;
+            }
+          }
+          if (ready) {
+            res.json({ success: true, gameId: idData.gameId, roomCode: idData.roomCode, idempotent: true });
+            return;
+          }
+          res.status(409).json({ error: 'Room sedang dalam proses inisialisasi katalog. Silakan coba sesaat lagi.' });
+          return;
+        }
+        // If initStatus === 'failed', proceed to allow a new attempt
       }
     }
 
@@ -195,9 +248,13 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
             const idempSnap = await tx.get(idempDocRef);
             if (idempSnap.exists) {
               const d = idempSnap.data()!;
-              createdGameId = d.gameId;
-              reservedRoomCode = d.roomCode;
-              return;
+              if (d.initStatus === 'ready') {
+                createdGameId = d.gameId;
+                reservedRoomCode = d.roomCode;
+                return;
+              } else if (d.initStatus === 'initializing') {
+                throw new Error('PARALLEL_INITIALIZATION');
+              }
             }
           }
 
@@ -212,11 +269,12 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
           }
 
           // 2. ALL WRITES AFTER READS
-          // Reserve the unique room code atomically
+          // Reserve the unique room code atomically with initStatus: 'initializing'
           tx.set(codeRef, {
             roomCode: candidateCode,
             gameId,
             hostUid: user.uid,
+            initStatus: 'initializing',
             createdAt: Date.now(),
           });
 
@@ -225,6 +283,7 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
               gameId,
               roomCode: candidateCode,
               hostUid: user.uid,
+              initStatus: 'initializing',
               createdAt: Date.now(),
             });
           }
@@ -234,6 +293,7 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
             roomCode: candidateCode,
             hostUid: user.uid,
             status: 'lobby',
+            initStatus: 'initializing',
             createdAt: Date.now(),
             settings: {
               initialBalance: Math.max(0, Math.round(Number(initialBalance) || 15000000)),
@@ -275,6 +335,10 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
         if (txErr.message === 'CODE_COLLISION') {
           continue;
         }
+        if (txErr.message === 'PARALLEL_INITIALIZATION') {
+          res.status(409).json({ error: 'Room sedang dalam proses inisialisasi. Silakan tunggu sesaat.' });
+          return;
+        }
         throw txErr;
       }
     }
@@ -307,6 +371,16 @@ app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res
         throw new Error('Gagal menginisialisasi katalog preset legacy: ' + (legacyErr.message || 'Error'));
       }
     }
+
+    // 4. Mark room and records as READY so parallel requests can now safely consume it
+    const readyUpdates = { initStatus: 'ready' };
+    const finalizeBatch = adminDb.batch();
+    finalizeBatch.update(adminDb.collection('games').doc(createdGameId), readyUpdates);
+    finalizeBatch.update(adminDb.collection('room_codes').doc(reservedRoomCode), readyUpdates);
+    if (idempDocRef) {
+      finalizeBatch.update(idempDocRef, readyUpdates);
+    }
+    await finalizeBatch.commit();
 
     res.json({ success: true, gameId: createdGameId, roomCode: reservedRoomCode });
   } catch (err: any) {
@@ -349,11 +423,21 @@ app.post('/api/rooms/lookup', async (req: Request, res: Response) => {
     const docSnap = q.docs[0];
     const data = docSnap.data();
 
+    if (data.initStatus === 'initializing') {
+      res.status(409).json({ error: 'Room sedang dalam proses inisialisasi katalog. Silakan coba sesaat lagi.' });
+      return;
+    }
+    if (data.initStatus === 'failed') {
+      res.status(404).json({ error: 'Room tidak valid atau gagal dibuat.' });
+      return;
+    }
+
     // Return strictly sanitized public room info
     res.json({
       gameId: docSnap.id,
       roomCode: data.roomCode,
       status: data.status,
+      initStatus: data.initStatus || 'ready',
       maxPlayers: data.settings?.maxPlayers || 4,
       membersCount: data.membersCount || 1,
       catalogPreset: data.settings?.catalogPreset,
@@ -394,6 +478,13 @@ app.post('/api/rooms/join', requireAuth, async (req: AuthenticatedRequest, res: 
       }
 
       const gameData = gameSnap.data()!;
+      if (gameData.initStatus === 'initializing') {
+        throw new Error('Room sedang dalam proses inisialisasi katalog. Silakan tunggu sesaat lagi.');
+      }
+      if (gameData.initStatus === 'failed') {
+        throw new Error('Room ini gagal diinisialisasi dan tidak dapat dimasuki.');
+      }
+
       const existingMemberSnap = await tx.get(memberRef);
       
       // If already a member, return success (session restoration)

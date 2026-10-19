@@ -92,6 +92,7 @@ export const AssetsScreen: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [groupConfirming, setGroupConfirming] = useState<GroupId | null>(null);
+  const [confirmingGroupModal, setConfirmingGroupModal] = useState<GroupId | null>(null);
 
   const isLobby = room?.status === 'lobby';
   const canManage = isHost && isLobby;
@@ -276,11 +277,33 @@ export const AssetsScreen: React.FC = () => {
   };
 
   const handleToggleConfirmGroup = async (groupId: GroupId, currentState: boolean) => {
+    if (!currentState) {
+      // Open modal so host deliberately verifies and determines that the member list is complete
+      setConfirmingGroupModal(groupId);
+      return;
+    }
+
+    if (!window.confirm(`Batal konfirmasi kelengkapan Kelompok ${groupId}? Bonus sewa 2× tidak akan aktif sampai dikonfirmasi kembali.`)) {
+      return;
+    }
+
     setGroupConfirming(groupId);
     try {
-      await confirmGroup(groupId, !currentState);
+      await confirmGroup(groupId, false);
     } catch (err: any) {
-      alert('Gagal mengubah status kelompok: ' + (err.message || 'Error'));
+      alert('Gagal membatalkan konfirmasi: ' + (err.message || 'Error'));
+    } finally {
+      setGroupConfirming(null);
+    }
+  };
+
+  const handleConfirmGroupCompleteness = async (groupId: GroupId) => {
+    setGroupConfirming(groupId);
+    try {
+      await confirmGroup(groupId, true);
+      setConfirmingGroupModal(null);
+    } catch (err: any) {
+      alert('Gagal mengonfirmasi kelengkapan kelompok: ' + (err.message || 'Error'));
     } finally {
       setGroupConfirming(null);
     }
@@ -1080,6 +1103,167 @@ export const AssetsScreen: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Host Group Completeness Confirmation Modal */}
+      {confirmingGroupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
+            {(() => {
+              const grpId = confirmingGroupModal;
+              const grpAssets = assets.filter(a => a.groupId === grpId);
+              const readyCount = grpAssets.filter(a => a.status === 'ready').length;
+              const draftCount = grpAssets.filter(a => a.status === 'draft').length;
+              const hasDrafts = draftCount > 0;
+              const hasZero = grpAssets.length === 0;
+              const canConfirm = !hasDrafts && !hasZero;
+              const style = GROUP_STYLES[grpId];
+
+              return (
+                <>
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center">
+                        <CheckCircle2 className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h2 className="text-sm font-bold text-slate-900">
+                          Konfirmasi Kelengkapan {style.name}
+                        </h2>
+                        <p className="text-[11px] text-slate-500">
+                          Tentukan daftar anggota kelompok sebelum mengaktifkan bonus sewa 2×
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setConfirmingGroupModal(null)}
+                      className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Summary Banner */}
+                  <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 font-medium">Kelompok:</span>
+                      <span className={`font-bold px-2 py-0.5 rounded-md ${style.bg} ${style.text}`}>
+                        {style.name}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 font-medium">Jumlah Properti Saat Ini:</span>
+                      <span className="font-extrabold text-slate-900">
+                        {grpAssets.length} Properti ({readyCount} Siap{draftCount > 0 ? `, ${draftCount} Draft` : ''})
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 font-medium">Bonus Sewa Tanah Monopoli:</span>
+                      <span className="font-bold text-emerald-700">2× Sewa Dasar</span>
+                    </div>
+                  </div>
+
+                  {/* Clarification about member count */}
+                  <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-[11px] leading-relaxed flex gap-2">
+                    <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                    <div>
+                      Jumlah anggota kelompok dihitung dari katalog aktual yang telah Anda susun (kelompok dengan 1 properti atau lebih valid selama dinyatakan lengkap oleh Host).
+                    </div>
+                  </div>
+
+                  {/* Asset List in Group */}
+                  <div className="space-y-1.5">
+                    <span className="text-xs font-bold text-slate-800 block">
+                      Daftar Anggota Kelompok ({grpAssets.length})
+                    </span>
+
+                    {grpAssets.length === 0 ? (
+                      <div className="p-4 rounded-xl border border-dashed border-slate-200 text-center text-xs text-slate-400">
+                        Belum ada properti di kelompok ini.
+                      </div>
+                    ) : (
+                      <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                        {grpAssets.map(item => (
+                          <div
+                            key={item.id}
+                            className="flex items-center justify-between p-2 rounded-xl border border-slate-200 bg-white text-xs"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="w-5 h-5 rounded-md bg-slate-100 text-slate-600 font-bold flex items-center justify-center text-[10px]">
+                                {item.boardPosition ? `#${item.boardPosition}` : '•'}
+                              </span>
+                              <div>
+                                <p className="font-bold text-slate-900">{item.name}</p>
+                                <p className="text-[10px] text-slate-400">
+                                  Beli: {formatRupiah(item.buyPrice)} • Sewa: {formatRupiah(item.rentBase)}
+                                </p>
+                              </div>
+                            </div>
+                            <span
+                              className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md border ${
+                                item.status === 'ready'
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  : 'bg-amber-50 text-amber-800 border-amber-200'
+                              }`}
+                            >
+                              {item.status === 'ready' ? 'Siap' : 'Draft'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Warning / Validation Notice */}
+                  {hasZero && (
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                      <span>Kelompok ini belum memiliki properti. Tambahkan minimal 1 properti berstatus Siap terlebih dahulu.</span>
+                    </div>
+                  )}
+
+                  {hasDrafts && (
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                      <span>
+                        Terdapat {draftCount} properti berstatus Draft. Seluruh data properti harus lengkap (berstatus Siap) sebelum kelengkapan kelompok dapat dikonfirmasi.
+                      </span>
+                    </div>
+                  )}
+
+                  {canConfirm && (
+                    <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex gap-2">
+                      <Check className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                      <span>
+                        Seluruh {grpAssets.length} properti berstatus Siap. Dengan konfirmasi ini, Anda menyatakan daftar anggota sudah lengkap sehingga pemain yang memiliki seluruhnya berhak atas sewa 2×.
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="pt-2 flex gap-2">
+                    <button
+                      type="button"
+                      disabled={!canConfirm || groupConfirming === grpId}
+                      onClick={() => handleConfirmGroupCompleteness(grpId)}
+                      className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed active:scale-98 text-white text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5"
+                    >
+                      <Check className="w-4 h-4" />
+                      <span>{groupConfirming === grpId ? 'Menyimpan...' : 'Ya, Tetapkan Kelompok Lengkap'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingGroupModal(null)}
+                      className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+                    >
+                      Batal
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
