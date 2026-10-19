@@ -7,9 +7,11 @@ import {
   ApprovalRequest, 
   PawnColor,
   RequestType,
-  VoteDecision
+  VoteDecision,
+  GroupId,
+  DEFAULT_GROUPS_CONFIG
 } from '../types/monopoli';
-import { SIMULASI_INDONESIA_ASSETS } from '../data/mockIndonesianAssets';
+import { PRESET_LEGACY_SIMULASI_ASSETS } from '../data/mockIndonesianAssets';
 import { generateRoomCode } from '../utils/formatters';
 import { 
   auth, 
@@ -17,12 +19,16 @@ import {
   isFirebaseConfigured, 
   signInWithGoogle, 
   signOutUser,
-  createGameInFirestore,
+  createGameViaBackend,
   lookupRoomByCode,
   joinGameViaBackend,
   distributeInitialBalanceViaBackend,
   submitRequestViaBackend,
-  castVoteViaBackend
+  castVoteViaBackend,
+  createAssetViaBackend,
+  updateAssetViaBackend,
+  deleteAssetViaBackend,
+  confirmGroupViaBackend
 } from '../services/firebase';
 import { 
   onAuthStateChanged, 
@@ -57,12 +63,16 @@ interface MonopoliContextType {
     initialBalance: number, 
     passStartReward: number, 
     maxPlayers: number, 
-    catalogPreset: 'simulation_indonesia' | 'custom_blank'
+    catalogPreset: 'custom_abcd' | 'simulation_indonesia_legacy'
   ) => Promise<void>;
   joinGame: (roomCode: string, playerName: string, pawnColor: PawnColor) => Promise<boolean>;
   startGame: () => Promise<void>;
   castVote: (requestId: string, decision: 'approved' | 'rejected') => Promise<void>;
   submitRequest: (type: RequestType, title: string, detail: string, amount: number) => Promise<void>;
+  createProperty: (property: Partial<AssetItem>) => Promise<AssetItem>;
+  updateProperty: (assetId: string, property: Partial<AssetItem>) => Promise<AssetItem>;
+  deleteProperty: (assetId: string) => Promise<void>;
+  confirmGroup: (groupId: GroupId, isConfirmed: boolean) => Promise<void>;
   resetGame: () => void;
 }
 
@@ -75,7 +85,7 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [activeTab, setActiveTab] = useState<'home' | 'assets' | 'requests' | 'activity' | 'settings'>('home');
   const [room, setRoom] = useState<GameRoom | null>(null);
   const [members, setMembers] = useState<GameMember[]>([]);
-  const [assets, setAssets] = useState<AssetItem[]>(SIMULASI_INDONESIA_ASSETS);
+  const [assets, setAssets] = useState<AssetItem[]>([]);
   const [transactions, setTransactions] = useState<LedgerEntry[]>([]);
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -138,13 +148,17 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     // 3. Listen to Assets subcollection (Single Source of Truth)
     const assetsColRef = collection(db, 'games', activeRoomId, 'assets');
     const unsubAssets = onSnapshot(assetsColRef, (snap) => {
-      if (!snap.empty) {
-        const assetList: AssetItem[] = [];
-        snap.forEach((docSnap) => {
-          assetList.push(docSnap.data() as AssetItem);
-        });
-        setAssets(assetList);
-      }
+      const assetList: AssetItem[] = [];
+      snap.forEach((docSnap) => {
+        assetList.push(docSnap.data() as AssetItem);
+      });
+      // Sort by boardPosition if available, otherwise by groupId then createdAt
+      assetList.sort((a, b) => {
+        if (a.boardPosition && b.boardPosition) return a.boardPosition - b.boardPosition;
+        if (a.groupId !== b.groupId) return a.groupId.localeCompare(b.groupId);
+        return a.name.localeCompare(b.name);
+      });
+      setAssets(assetList);
     }, (error) => {
       console.warn('Assets listener error:', error);
     });
@@ -212,14 +226,14 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setCurrentUser(null);
   };
 
-  // Host creates game room
+  // Host creates game room via trusted backend
   const createGame = async (
     hostName: string, 
     pawnColor: PawnColor, 
     initialBalance: number, 
     passStartReward: number, 
     maxPlayers: number,
-    catalogPreset: 'simulation_indonesia' | 'custom_blank'
+    catalogPreset: 'custom_abcd' | 'simulation_indonesia_legacy'
   ) => {
     if (isFirebaseConfigured && db) {
       let user = currentUser;
@@ -228,7 +242,7 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         if (!user) return;
       }
 
-      const { gameId } = await createGameInFirestore(
+      const { gameId } = await createGameViaBackend(
         {
           uid: user.uid,
           displayName: hostName || user.displayName || 'Host Permainan',
@@ -276,12 +290,13 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           catalogPreset,
           allowNegativeBalance: false,
         },
+        groupsConfig: DEFAULT_GROUPS_CONFIG,
         initialBalanceDistributed: false,
       };
 
       setRoom(newRoom);
       setMembers([mockHost]);
-      setAssets(SIMULASI_INDONESIA_ASSETS);
+      setAssets(catalogPreset === 'simulation_indonesia_legacy' ? PRESET_LEGACY_SIMULASI_ASSETS : []);
       setTransactions([]);
       setRequests([]);
       setActiveTab('home');
@@ -341,8 +356,6 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     if (isFirebaseConfigured && db) {
       await distributeInitialBalanceViaBackend(room.id);
     } else {
-      // Disabled in preview mode per user requirement:
-      // "Nonaktifkan tindakan finansial dalam mode preview tanpa backend."
       alert('Tindakan finansial dinonaktifkan dalam mode preview tanpa backend. Harap konfigurasikan Firebase untuk memulai permainan multiplayer nyata.');
     }
   };
@@ -380,12 +393,101 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
+  // Create Property in Catalog
+  const createProperty = async (property: Partial<AssetItem>): Promise<AssetItem> => {
+    if (!room) throw new Error('Room tidak ditemukan.');
+
+    if (isFirebaseConfigured && db) {
+      return await createAssetViaBackend(room.id, property);
+    } else {
+      const assetId = `prop-${(property.groupId || 'A').toLowerCase()}-${Date.now().toString(36)}`;
+      const newAsset: AssetItem = {
+        id: assetId,
+        name: property.name || 'Properti Baru',
+        groupId: property.groupId || 'A',
+        boardPosition: property.boardPosition,
+        category: 'property',
+        buyPrice: Number(property.buyPrice) || 0,
+        mortgageValue: Number(property.mortgageValue) || 0,
+        rentBase: Number(property.rentBase) || 0,
+        rentOneHouse: Number(property.rentOneHouse) || 0,
+        rentTwoHouses: Number(property.rentTwoHouses) || 0,
+        rentThreeHouses: Number(property.rentThreeHouses) || 0,
+        rentFourHouses: Number(property.rentFourHouses) || 0,
+        rentHotel: Number(property.rentHotel) || 0,
+        houseCost: Number(property.houseCost) || 0,
+        hotelCost: Number(property.hotelCost) || 0,
+        status: property.status === 'ready' ? 'ready' : 'draft',
+        ownerId: null,
+        isMortgaged: false,
+        housesCount: 0,
+        hotelsCount: 0,
+      };
+      setAssets(prev => [...prev, newAsset]);
+      return newAsset;
+    }
+  };
+
+  // Update Property in Catalog
+  const updateProperty = async (assetId: string, property: Partial<AssetItem>): Promise<AssetItem> => {
+    if (!room) throw new Error('Room tidak ditemukan.');
+
+    if (isFirebaseConfigured && db) {
+      return await updateAssetViaBackend(room.id, assetId, property);
+    } else {
+      let updated: AssetItem | null = null;
+      setAssets(prev => prev.map(a => {
+        if (a.id === assetId) {
+          updated = { ...a, ...property } as AssetItem;
+          return updated;
+        }
+        return a;
+      }));
+      return updated!;
+    }
+  };
+
+  // Delete Property from Catalog
+  const deleteProperty = async (assetId: string): Promise<void> => {
+    if (!room) throw new Error('Room tidak ditemukan.');
+
+    if (isFirebaseConfigured && db) {
+      await deleteAssetViaBackend(room.id, assetId);
+    } else {
+      setAssets(prev => prev.filter(a => a.id !== assetId));
+    }
+  };
+
+  // Confirm or Unconfirm Group A/B/C/D
+  const confirmGroup = async (groupId: GroupId, isConfirmed: boolean): Promise<void> => {
+    if (!room) throw new Error('Room tidak ditemukan.');
+
+    if (isFirebaseConfigured && db) {
+      const res = await confirmGroupViaBackend(room.id, groupId, isConfirmed);
+      if (res?.groupsConfig) {
+        setRoom(prev => prev ? { ...prev, groupsConfig: res.groupsConfig } : null);
+      }
+    } else {
+      setRoom(prev => {
+        if (!prev) return null;
+        const updated = {
+          ...prev.groupsConfig,
+          [groupId]: {
+            ...prev.groupsConfig[groupId],
+            isConfirmed,
+          },
+        };
+        return { ...prev, groupsConfig: updated };
+      });
+    }
+  };
+
   const resetGame = () => {
     localStorage.removeItem(LOCAL_STORAGE_ROOM_KEY);
     setActiveRoomId(null);
     setRoom(null);
     setMembers([]);
-    setAssets(SIMULASI_INDONESIA_ASSETS);
+    setAssets([]);
     setTransactions([]);
     setRequests([]);
     setActiveTab('home');
@@ -413,6 +515,10 @@ export const MonopoliProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         startGame,
         castVote,
         submitRequest,
+        createProperty,
+        updateProperty,
+        deleteProperty,
+        confirmGroup,
         resetGame,
       }}
     >

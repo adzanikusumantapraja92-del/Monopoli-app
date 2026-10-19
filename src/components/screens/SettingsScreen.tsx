@@ -79,7 +79,7 @@ export const SettingsScreen: React.FC = () => {
           <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
             <span className="text-slate-600">Preset Katalog Aset</span>
             <span className="font-extrabold text-slate-900">
-              {room.settings.catalogPreset === 'simulation_indonesia' ? 'Data Simulasi Indonesia (28)' : 'Katalog Kosong'}
+              {room.settings.catalogPreset === 'simulation_indonesia_legacy' ? 'Preset Legacy (28 Aset)' : 'Kelompok A, B, C, D'}
             </span>
           </div>
           <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">

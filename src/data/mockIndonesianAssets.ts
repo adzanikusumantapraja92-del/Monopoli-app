@@ -1,15 +1,58 @@
-import { AssetItem, ColorGroup } from '../types/monopoli';
+import { AssetItem, ColorGroup, GroupId } from '../types/monopoli';
+
+export const GROUP_ABCD_CONFIG: Record<GroupId, {
+  label: string;
+  badgeLabel: string;
+  bgClass: string;
+  badgeClass: string;
+  borderClass: string;
+  accentHex: string;
+}> = {
+  A: {
+    label: 'Kelompok A',
+    badgeLabel: 'Grup A',
+    bgClass: 'bg-indigo-600',
+    badgeClass: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+    borderClass: 'border-indigo-600',
+    accentHex: '#4f46e5',
+  },
+  B: {
+    label: 'Kelompok B',
+    badgeLabel: 'Grup B',
+    bgClass: 'bg-amber-600',
+    badgeClass: 'bg-amber-50 text-amber-900 border-amber-200',
+    borderClass: 'border-amber-600',
+    accentHex: '#d97706',
+  },
+  C: {
+    label: 'Kelompok C',
+    badgeLabel: 'Grup C',
+    bgClass: 'bg-emerald-600',
+    badgeClass: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+    borderClass: 'border-emerald-600',
+    accentHex: '#059669',
+  },
+  D: {
+    label: 'Kelompok D',
+    badgeLabel: 'Grup D',
+    bgClass: 'bg-rose-600',
+    badgeClass: 'bg-rose-50 text-rose-900 border-rose-200',
+    borderClass: 'border-rose-600',
+    accentHex: '#e11d48',
+  },
+};
 
 /**
- * Preset data contoh berlabel 'DATA SIMULASI'.
- * Berdasarkan inspirasi tengara/kota Indonesia populer untuk papan Monopoli fisik standar.
- * Pengguna dapat menyesuaikan nama atau menggunakan katalog kosong untuk menyelaraskan dengan papan fisik miliknya.
+ * PRESET LEGACY SIMULASI (TIDAK DIGUNAKAN OTOMATIS PADA KATALOG BARU).
+ * Sesuai instruksi Patch A: data simulasi lama tidak dihapus, melainkan dipisahkan
+ * sebagai preset legacy. Katalog baru diisi secara bertahap dalam Kelompok A, B, C, D.
  */
-export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
-  // Cokelat (Brown) - Jakarta
+export const PRESET_LEGACY_SIMULASI_ASSETS: AssetItem[] = [
+  // Cokelat (Brown) - Jakarta -> Map to Group A
   {
     id: 'prop-br-1',
     name: 'Monas (Monumen Nasional)',
+    groupId: 'A',
     group: 'brown',
     category: 'property',
     buyPrice: 600000,
@@ -22,6 +65,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 2500000,
     houseCost: 500000,
     hotelCost: 500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -30,6 +74,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-br-2',
     name: 'Kota Tua Jakarta',
+    groupId: 'A',
     group: 'brown',
     category: 'property',
     buyPrice: 600000,
@@ -42,16 +87,18 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 4500000,
     houseCost: 500000,
     hotelCost: 500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
     hotelsCount: 0,
   },
 
-  // Biru Muda (Light Blue) - Jawa Barat & Banten
+  // Biru Muda (Light Blue) -> Map to Group A
   {
     id: 'prop-lb-1',
     name: 'Kebun Raya Bogor',
+    groupId: 'A',
     group: 'lightblue',
     category: 'property',
     buyPrice: 1000000,
@@ -64,6 +111,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 5500000,
     houseCost: 500000,
     hotelCost: 500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -72,6 +120,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-lb-2',
     name: 'Pantai Anyer',
+    groupId: 'A',
     group: 'lightblue',
     category: 'property',
     buyPrice: 1000000,
@@ -84,6 +133,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 5500000,
     houseCost: 500000,
     hotelCost: 500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -92,6 +142,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-lb-3',
     name: 'Pelabuhan Merak',
+    groupId: 'A',
     group: 'lightblue',
     category: 'property',
     buyPrice: 1200000,
@@ -104,16 +155,18 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 6000000,
     houseCost: 500000,
     hotelCost: 500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
     hotelsCount: 0,
   },
 
-  // Merah Muda (Pink) - Bandung
+  // Merah Muda (Pink) - Bandung -> Map to Group B
   {
     id: 'prop-pk-1',
     name: 'Gedung Sate Bandung',
+    groupId: 'B',
     group: 'pink',
     category: 'property',
     buyPrice: 1400000,
@@ -126,6 +179,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 7500000,
     houseCost: 1000000,
     hotelCost: 1000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -134,6 +188,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-pk-2',
     name: 'Tangkuban Perahu',
+    groupId: 'B',
     group: 'pink',
     category: 'property',
     buyPrice: 1400000,
@@ -146,6 +201,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 7500000,
     houseCost: 1000000,
     hotelCost: 1000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -154,6 +210,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-pk-3',
     name: 'Kawah Putih Ciwidey',
+    groupId: 'B',
     group: 'pink',
     category: 'property',
     buyPrice: 1600000,
@@ -166,16 +223,18 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 9000000,
     houseCost: 1000000,
     hotelCost: 1000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
     hotelsCount: 0,
   },
 
-  // Oranye (Orange) - D.I. Yogyakarta
+  // Oranye (Orange) - Yogyakarta -> Map to Group B
   {
     id: 'prop-or-1',
     name: 'Jalan Malioboro',
+    groupId: 'B',
     group: 'orange',
     category: 'property',
     buyPrice: 1800000,
@@ -188,6 +247,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 9500000,
     houseCost: 1000000,
     hotelCost: 1000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -196,6 +256,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-or-2',
     name: 'Candi Prambanan',
+    groupId: 'B',
     group: 'orange',
     category: 'property',
     buyPrice: 1800000,
@@ -208,6 +269,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 9500000,
     houseCost: 1000000,
     hotelCost: 1000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -216,6 +278,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-or-3',
     name: 'Keraton Yogyakarta',
+    groupId: 'B',
     group: 'orange',
     category: 'property',
     buyPrice: 2000000,
@@ -228,16 +291,18 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 10000000,
     houseCost: 1000000,
     hotelCost: 1000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
     hotelsCount: 0,
   },
 
-  // Merah (Red) - Jawa Tengah
+  // Merah (Red) -> Map to Group C
   {
     id: 'prop-rd-1',
     name: 'Lawang Sewu Semarang',
+    groupId: 'C',
     group: 'red',
     category: 'property',
     buyPrice: 2200000,
@@ -250,6 +315,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 10500000,
     houseCost: 1500000,
     hotelCost: 1500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -258,6 +324,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-rd-2',
     name: 'Pantai Kartini Jepara',
+    groupId: 'C',
     group: 'red',
     category: 'property',
     buyPrice: 2200000,
@@ -270,6 +337,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 10500000,
     houseCost: 1500000,
     hotelCost: 1500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -278,6 +346,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-rd-3',
     name: 'Candi Borobudur Magelang',
+    groupId: 'C',
     group: 'red',
     category: 'property',
     buyPrice: 2400000,
@@ -290,16 +359,18 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 11000000,
     houseCost: 1500000,
     hotelCost: 1500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
     hotelsCount: 0,
   },
 
-  // Kuning (Yellow) - Jawa Timur
+  // Kuning (Yellow) -> Map to Group C
   {
     id: 'prop-yl-1',
     name: 'Jembatan Suramadu',
+    groupId: 'C',
     group: 'yellow',
     category: 'property',
     buyPrice: 2600000,
@@ -312,6 +383,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 11500000,
     houseCost: 1500000,
     hotelCost: 1500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -320,6 +392,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-yl-2',
     name: 'Taman Nasional Bromo',
+    groupId: 'C',
     group: 'yellow',
     category: 'property',
     buyPrice: 2600000,
@@ -332,6 +405,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 11500000,
     houseCost: 1500000,
     hotelCost: 1500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -340,6 +414,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-yl-3',
     name: 'Kawah Ijen Banyuwangi',
+    groupId: 'C',
     group: 'yellow',
     category: 'property',
     buyPrice: 2800000,
@@ -352,16 +427,18 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 12000000,
     houseCost: 1500000,
     hotelCost: 1500000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
     hotelsCount: 0,
   },
 
-  // Hijau (Green) - Bali & Lombok
+  // Hijau (Green) & Biru Tua (Dark Blue) -> Map to Group D
   {
     id: 'prop-gr-1',
     name: 'Pantai Kuta Bali',
+    groupId: 'D',
     group: 'green',
     category: 'property',
     buyPrice: 3000000,
@@ -374,6 +451,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 12750000,
     houseCost: 2000000,
     hotelCost: 2000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -382,6 +460,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-gr-2',
     name: 'Tanah Lot Tabanan',
+    groupId: 'D',
     group: 'green',
     category: 'property',
     buyPrice: 3000000,
@@ -394,6 +473,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 12750000,
     houseCost: 2000000,
     hotelCost: 2000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -402,6 +482,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-gr-3',
     name: 'Danau Beratan Bedugul',
+    groupId: 'D',
     group: 'green',
     category: 'property',
     buyPrice: 3200000,
@@ -414,16 +495,16 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 14000000,
     houseCost: 2000000,
     hotelCost: 2000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
     hotelsCount: 0,
   },
-
-  // Biru Tua (Dark Blue) - Destinasi Wisata Unggulan
   {
     id: 'prop-db-1',
     name: 'Labuan Bajo NTT',
+    groupId: 'D',
     group: 'darkblue',
     category: 'property',
     buyPrice: 3500000,
@@ -436,6 +517,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 15000000,
     houseCost: 2000000,
     hotelCost: 2000000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -444,6 +526,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   {
     id: 'prop-db-2',
     name: 'Raja Ampat Papua',
+    groupId: 'D',
     group: 'darkblue',
     category: 'property',
     buyPrice: 4000000,
@@ -456,88 +539,7 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
     rentHotel: 20000000,
     houseCost: 2000000,
     hotelCost: 2000000,
-    ownerId: null,
-    isMortgaged: false,
-    housesCount: 0,
-    hotelsCount: 0,
-  },
-
-  // Transportasi (Stasiun Kereta Api / Bandara / Pelabuhan)
-  {
-    id: 'trans-1',
-    name: 'Stasiun Gambir Jakarta',
-    group: 'transport',
-    category: 'transport',
-    buyPrice: 2000000,
-    mortgageValue: 1000000,
-    rentBase: 250000, // 1 stasiun: 250rb, 2 stasiun: 500rb, 3 stasiun: 1jt, 4 stasiun: 2jt
-    ownerId: null,
-    isMortgaged: false,
-    housesCount: 0,
-    hotelsCount: 0,
-  },
-  {
-    id: 'trans-2',
-    name: 'Stasiun Bandung Hall',
-    group: 'transport',
-    category: 'transport',
-    buyPrice: 2000000,
-    mortgageValue: 1000000,
-    rentBase: 250000,
-    ownerId: null,
-    isMortgaged: false,
-    housesCount: 0,
-    hotelsCount: 0,
-  },
-  {
-    id: 'trans-3',
-    name: 'Stasiun Tugu Yogyakarta',
-    group: 'transport',
-    category: 'transport',
-    buyPrice: 2000000,
-    mortgageValue: 1000000,
-    rentBase: 250000,
-    ownerId: null,
-    isMortgaged: false,
-    housesCount: 0,
-    hotelsCount: 0,
-  },
-  {
-    id: 'trans-4',
-    name: 'Stasiun Surabaya Gubeng',
-    group: 'transport',
-    category: 'transport',
-    buyPrice: 2000000,
-    mortgageValue: 1000000,
-    rentBase: 250000,
-    ownerId: null,
-    isMortgaged: false,
-    housesCount: 0,
-    hotelsCount: 0,
-  },
-
-  // Utilitas Umum (Listrik & Air)
-  {
-    id: 'util-1',
-    name: 'PLN (Perusahaan Listrik Negara)',
-    group: 'utility',
-    category: 'utility',
-    buyPrice: 1500000,
-    mortgageValue: 750000,
-    rentBase: 40000, // 4x dadu jika 1 utilitas, 10x dadu jika keduanya
-    ownerId: null,
-    isMortgaged: false,
-    housesCount: 0,
-    hotelsCount: 0,
-  },
-  {
-    id: 'util-2',
-    name: 'PDAM (Perusahaan Daerah Air Minum)',
-    group: 'utility',
-    category: 'utility',
-    buyPrice: 1500000,
-    mortgageValue: 750000,
-    rentBase: 40000,
+    status: 'ready',
     ownerId: null,
     isMortgaged: false,
     housesCount: 0,
@@ -545,81 +547,24 @@ export const SIMULASI_INDONESIA_ASSETS: AssetItem[] = [
   },
 ];
 
-export const COLOR_GROUP_CONFIG: Record<ColorGroup, {
+export const SIMULASI_INDONESIA_ASSETS = PRESET_LEGACY_SIMULASI_ASSETS;
+
+// Backward-compatible color mapping for any legacy references
+export const COLOR_GROUP_CONFIG: Record<string, {
   label: string;
   bgClass: string;
   badgeClass: string;
   borderClass: string;
   accentHex: string;
 }> = {
-  brown: {
-    label: 'Cokelat',
-    bgClass: 'bg-amber-900',
-    badgeClass: 'bg-amber-100 text-amber-900 border-amber-300',
-    borderClass: 'border-amber-900',
-    accentHex: '#78350f',
-  },
-  lightblue: {
-    label: 'Biru Muda',
-    bgClass: 'bg-sky-400',
-    badgeClass: 'bg-sky-100 text-sky-800 border-sky-300',
-    borderClass: 'border-sky-400',
-    accentHex: '#38bdf8',
-  },
-  pink: {
-    label: 'Merah Muda',
-    bgClass: 'bg-pink-500',
-    badgeClass: 'bg-pink-100 text-pink-800 border-pink-300',
-    borderClass: 'border-pink-500',
-    accentHex: '#ec4899',
-  },
-  orange: {
-    label: 'Oranye',
-    bgClass: 'bg-orange-500',
-    badgeClass: 'bg-orange-100 text-orange-900 border-orange-300',
-    borderClass: 'border-orange-500',
-    accentHex: '#f97316',
-  },
-  red: {
-    label: 'Merah',
-    bgClass: 'bg-red-600',
-    badgeClass: 'bg-red-100 text-red-800 border-red-300',
-    borderClass: 'border-red-600',
-    accentHex: '#dc2626',
-  },
-  yellow: {
-    label: 'Kuning',
-    bgClass: 'bg-yellow-400',
-    badgeClass: 'bg-yellow-100 text-yellow-900 border-yellow-300',
-    borderClass: 'border-yellow-400',
-    accentHex: '#eab308',
-  },
-  green: {
-    label: 'Hijau',
-    bgClass: 'bg-emerald-600',
-    badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-300',
-    borderClass: 'border-emerald-600',
-    accentHex: '#059669',
-  },
-  darkblue: {
-    label: 'Biru Tua',
-    bgClass: 'bg-blue-800',
-    badgeClass: 'bg-blue-100 text-blue-900 border-blue-300',
-    borderClass: 'border-blue-800',
-    accentHex: '#1e40af',
-  },
-  transport: {
-    label: 'Transportasi',
-    bgClass: 'bg-slate-700',
-    badgeClass: 'bg-slate-100 text-slate-800 border-slate-300',
-    borderClass: 'border-slate-700',
-    accentHex: '#334155',
-  },
-  utility: {
-    label: 'Utilitas',
-    bgClass: 'bg-stone-600',
-    badgeClass: 'bg-stone-100 text-stone-800 border-stone-300',
-    borderClass: 'border-stone-600',
-    accentHex: '#57534e',
-  },
+  brown: { label: 'Cokelat', bgClass: 'bg-amber-900', badgeClass: 'bg-amber-100 text-amber-900 border-amber-300', borderClass: 'border-amber-900', accentHex: '#78350f' },
+  lightblue: { label: 'Biru Muda', bgClass: 'bg-sky-400', badgeClass: 'bg-sky-100 text-sky-800 border-sky-300', borderClass: 'border-sky-400', accentHex: '#38bdf8' },
+  pink: { label: 'Merah Muda', bgClass: 'bg-pink-500', badgeClass: 'bg-pink-100 text-pink-800 border-pink-300', borderClass: 'border-pink-500', accentHex: '#ec4899' },
+  orange: { label: 'Oranye', bgClass: 'bg-orange-500', badgeClass: 'bg-orange-100 text-orange-900 border-orange-300', borderClass: 'border-orange-500', accentHex: '#f97316' },
+  red: { label: 'Merah', bgClass: 'bg-red-600', badgeClass: 'bg-red-100 text-red-800 border-red-300', borderClass: 'border-red-600', accentHex: '#dc2626' },
+  yellow: { label: 'Kuning', bgClass: 'bg-yellow-400', badgeClass: 'bg-yellow-100 text-yellow-900 border-yellow-300', borderClass: 'border-yellow-400', accentHex: '#eab308' },
+  green: { label: 'Hijau', bgClass: 'bg-emerald-600', badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-300', borderClass: 'border-emerald-600', accentHex: '#059669' },
+  darkblue: { label: 'Biru Tua', bgClass: 'bg-blue-800', badgeClass: 'bg-blue-100 text-blue-900 border-blue-300', borderClass: 'border-blue-800', accentHex: '#1e40af' },
+  transport: { label: 'Transportasi', bgClass: 'bg-slate-700', badgeClass: 'bg-slate-100 text-slate-800 border-slate-300', borderClass: 'border-slate-700', accentHex: '#334155' },
+  utility: { label: 'Utilitas', bgClass: 'bg-stone-600', badgeClass: 'bg-stone-100 text-stone-800 border-stone-300', borderClass: 'border-stone-600', accentHex: '#57534e' },
 };

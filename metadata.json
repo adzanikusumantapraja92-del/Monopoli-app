@@ -2,5 +2,7 @@
   "name": "Monopoli Bank Indonesia",
   "description": "Sistem bank digital multiplayer pendamping permainan Monopoli fisik Indonesia dengan validasi konsensus dan pencatatan ledger atomik.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

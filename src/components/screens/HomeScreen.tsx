@@ -37,7 +37,7 @@ export const HomeScreen: React.FC = () => {
   const [initialBalance, setInitialBalance] = useState<number>(15000000);
   const [passStartReward, setPassStartReward] = useState<number>(2000000);
   const [maxPlayers, setMaxPlayers] = useState<number>(4);
-  const [catalogPreset, setCatalogPreset] = useState<'simulation_indonesia' | 'custom_blank'>('simulation_indonesia');
+  const [catalogPreset, setCatalogPreset] = useState<'custom_abcd' | 'simulation_indonesia_legacy'>('custom_abcd');
 
   // Join form state
   const [joinCode, setJoinCode] = useState('');
@@ -313,17 +313,19 @@ export const HomeScreen: React.FC = () => {
 
             {/* Catalog Preset */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-700">Katalog Aset Papan</label>
+              <label className="text-xs font-semibold text-slate-700">Katalog Properti Awal</label>
               <select
                 value={catalogPreset}
                 onChange={(e) => setCatalogPreset(e.target.value as any)}
                 className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-medium bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20"
               >
-                <option value="simulation_indonesia">Preset Data Simulasi Indonesia (28 Aset Lengkap)</option>
-                <option value="custom_blank">Katalog Kosong (Input Manual Papan Fisik)</option>
+                <option value="custom_abcd">Katalog Baru (Kelompok A, B, C, D) — Input Manual di Lobby</option>
+                <option value="simulation_indonesia_legacy">Preset Legacy (Data Simulasi Monopoli ID 28 Aset)</option>
               </select>
-              <p className="text-[11px] text-amber-700 font-medium">
-                *Berlabel resmi <strong>Data Simulasi</strong> agar tidak rancu dengan varian papan cetak.
+              <p className="text-[11px] text-slate-500 font-normal">
+                {catalogPreset === 'custom_abcd' 
+                  ? 'Host dapat menyusun properti kelompok A, B, C, D sesuai papan fisik sebelum permainan dimulai.'
+                  : 'Preset cadangan data simulasi lama (kelompok warna klasik). Tidak otomatis untuk game baru.'}
               </p>
             </div>
           </div>

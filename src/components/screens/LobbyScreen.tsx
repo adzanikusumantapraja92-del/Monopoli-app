@@ -10,11 +10,15 @@ import {
   Settings2, 
   Coins, 
   ShieldAlert,
-  Share2
+  Share2,
+  Building2,
+  ArrowRight,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 
 export const LobbyScreen: React.FC = () => {
-  const { room, members, isHost, startGame, isFirebaseConfigured } = useMonopoli();
+  const { room, members, isHost, startGame, isFirebaseConfigured, assets, setActiveTab, confirmGroup } = useMonopoli();
   const [copied, setCopied] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
@@ -138,6 +142,61 @@ export const LobbyScreen: React.FC = () => {
         </div>
       </div>
 
+      {/* Kelola Katalog Properti Card */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Building2 className="w-5 h-5 text-emerald-600" />
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Katalog Properti (Kelompok A, B, C, D)</h2>
+              <p className="text-[11px] text-slate-500">Total {assets.length} properti terdaftar</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setActiveTab('assets')}
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 active:scale-98 text-white text-xs font-semibold shadow-xs transition-all"
+          >
+            <span>{isHost ? 'Kelola Katalog Properti' : 'Lihat Katalog Properti'}</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Group A-D Overview */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          {(['A', 'B', 'C', 'D'] as const).map((grpId) => {
+            const count = assets.filter(a => a.groupId === grpId).length;
+            const readyCount = assets.filter(a => a.groupId === grpId && a.status === 'ready').length;
+            const isConfirmed = room.groupsConfig?.[grpId]?.isConfirmed ?? false;
+            return (
+              <div key={grpId} className="p-3 rounded-xl border border-slate-200 bg-slate-50/60 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-900">Kelompok {grpId}</span>
+                  {isConfirmed ? (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 font-bold flex items-center gap-0.5">
+                      <CheckCircle2 className="w-2.5 h-2.5" /> Siap
+                    </span>
+                  ) : (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 font-medium">
+                      Belum Lengkap
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  <span className="font-semibold text-slate-800">{count} Aset</span> ({readyCount} siap)
+                </div>
+                <p className="text-[10px] text-slate-400">Sewa tanah: ×2</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <p className="text-xs text-slate-500 bg-slate-50 p-2.5 rounded-xl border border-slate-100 leading-relaxed">
+          {isHost
+            ? 'Sebagai Host, Anda dapat menyusun properti di kelompok A, B, C, D dan mengonfirmasi kelengkapan kelompok. Katalog dikunci permanen saat permainan dimulai.'
+            : 'Katalog properti disiapkan oleh Host. Anda dapat melihat daftar properti dan rincian tarif sewa di tab Katalog.'}
+        </p>
+      </div>
+
       {/* Game Rules & Config Summary */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-3">
         <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
@@ -165,7 +224,7 @@ export const LobbyScreen: React.FC = () => {
           <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
             <span className="text-slate-500">Katalog Papan:</span>
             <p className="text-sm font-extrabold text-slate-900 mt-0.5">
-              {room.settings.catalogPreset === 'simulation_indonesia' ? '28 Aset (Simulasi ID)' : 'Katalog Kosong'}
+              {room.settings.catalogPreset === 'simulation_indonesia_legacy' ? 'Preset Legacy (28 Aset)' : 'Kelompok A, B, C, D'}
             </p>
             <p className="text-[10px] text-slate-400 mt-0.5">Tersinkronisasi ke Cloud</p>
           </div>

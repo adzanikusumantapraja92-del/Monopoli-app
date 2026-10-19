@@ -20,14 +20,23 @@ app.use(express.json());
 let adminDb: Firestore | null = null;
 let adminAuth: Auth | null = null;
 
-const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+import firebaseConfig from './firebase-applet-config.json';
+import { PRESET_LEGACY_SIMULASI_ASSETS } from './src/data/mockIndonesianAssets.ts';
+import { DEFAULT_GROUPS_CONFIG } from './src/types/monopoli.ts';
+
+function generateRoomCode(): string {
+  const num = Math.floor(1000 + Math.random() * 9000);
+  return `MNP-${num}`;
+}
+
+const projectId = firebaseConfig?.projectId || process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
 
 if (projectId && projectId !== 'MY_FIREBASE_PROJECT_ID') {
   try {
     const adminApp: App = getApps().length === 0 ? initializeApp({ projectId }) : getApps()[0];
-    adminDb = getFirestore(adminApp);
+    adminDb = firebaseConfig?.firestoreDatabaseId ? getFirestore(adminApp, firebaseConfig.firestoreDatabaseId) : getFirestore(adminApp);
     adminAuth = getAuth(adminApp);
-    console.log(`[Firebase Admin] Initialized for project: ${projectId}`);
+    console.log(`[Firebase Admin] Initialized for project: ${projectId}, database: ${firebaseConfig?.firestoreDatabaseId || '(default)'}`);
   } catch (err) {
     console.warn('[Firebase Admin] Initialization failed:', err);
   }
@@ -84,6 +93,106 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
 // ==========================================
 // API ROUTES
 // ==========================================
+
+/**
+ * 0. POST /api/rooms/create
+ * Trusted backend endpoint for atomic room and host member creation
+ */
+app.post('/api/rooms/create', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { displayName, pawnColor, initialBalance, passStartReward, maxPlayers, catalogPreset } = req.body;
+  const user = req.user!;
+
+  if (!pawnColor) {
+    res.status(400).json({ error: 'Warna pion wajib dipilih.' });
+    return;
+  }
+
+  if (!adminDb) {
+    res.status(503).json({ error: 'Backend Firebase belum aktif. Mode preview tanpa server.' });
+    return;
+  }
+
+  try {
+    const gameRef = adminDb.collection('games').doc();
+    const gameId = gameRef.id;
+
+    // Generate unique room code
+    let roomCode = generateRoomCode();
+    const existingCode = await adminDb.collection('games').where('roomCode', '==', roomCode).limit(1).get();
+    if (!existingCode.empty) {
+      roomCode = generateRoomCode();
+    }
+
+    const hostMemberRef = gameRef.collection('members').doc(user.uid);
+
+    await adminDb.runTransaction(async (tx: Transaction) => {
+      // 1. ALL READS FIRST
+      const hostSnap = await tx.get(hostMemberRef);
+      if (hostSnap.exists) {
+        throw new Error('Host sudah terdaftar dalam sesi ini.');
+      }
+
+      // 2. ALL WRITES AFTER READS
+      tx.set(gameRef, {
+        id: gameId,
+        roomCode,
+        hostUid: user.uid,
+        status: 'lobby',
+        createdAt: Date.now(),
+        settings: {
+          initialBalance: Math.max(0, Math.round(Number(initialBalance) || 15000000)),
+          passStartReward: Math.max(0, Math.round(Number(passStartReward) || 2000000)),
+          maxPlayers: Math.min(8, Math.max(2, Math.round(Number(maxPlayers) || 4))),
+          catalogPreset: catalogPreset || 'custom_abcd',
+          allowNegativeBalance: false,
+        },
+        groupsConfig: {
+          A: { id: 'A', label: 'Kelompok A', rentMultiplier: 2, isConfirmed: false },
+          B: { id: 'B', label: 'Kelompok B', rentMultiplier: 2, isConfirmed: false },
+          C: { id: 'C', label: 'Kelompok C', rentMultiplier: 2, isConfirmed: false },
+          D: { id: 'D', label: 'Kelompok D', rentMultiplier: 2, isConfirmed: false },
+        },
+        initialBalanceDistributed: false,
+        membersCount: 1,
+      });
+
+      tx.set(hostMemberRef, {
+        uid: user.uid,
+        displayName: displayName || user.displayName || 'Host Permainan',
+        email: user.email || '',
+        avatarUrl: '',
+        pawnColor,
+        isHost: true,
+        balance: 0,
+        isBankrupt: false,
+        joinedAt: Date.now(),
+        propertiesOwnedCount: 0,
+      });
+    });
+
+    // Populate legacy simulation preset only if explicitly chosen
+    if (catalogPreset === 'simulation_indonesia_legacy') {
+      const batch = adminDb.batch();
+      for (const asset of PRESET_LEGACY_SIMULASI_ASSETS) {
+        const assetRef = gameRef.collection('assets').doc(asset.id);
+        batch.set(assetRef, {
+          ...asset,
+          ownerId: null,
+          isMortgaged: false,
+          housesCount: 0,
+          hotelsCount: 0,
+          createdAt: Date.now(),
+        });
+      }
+      await batch.commit();
+    }
+
+    res.json({ success: true, gameId, roomCode });
+  } catch (err: any) {
+    console.error('Create room error:', err);
+    res.status(400).json({ error: err.message || 'Gagal membuat room permainan.' });
+  }
+});
 
 /**
  * 1. POST /api/rooms/lookup
@@ -310,6 +419,270 @@ app.post('/api/rooms/start', requireAuth, async (req: AuthenticatedRequest, res:
   } catch (err: any) {
     console.error('Start game error:', err);
     res.status(400).json({ error: err.message || 'Gagal memulai permainan.' });
+  }
+});
+
+/**
+ * 3a. POST /api/assets/create
+ * Host creates property in catalog A, B, C, D during lobby
+ */
+app.post('/api/assets/create', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { gameId, property } = req.body;
+  const user = req.user!;
+
+  if (!gameId || !property || !property.name || !property.groupId) {
+    res.status(400).json({ error: 'Data properti tidak lengkap (nama dan kelompok wajib diisi).' });
+    return;
+  }
+
+  if (!['A', 'B', 'C', 'D'].includes(property.groupId)) {
+    res.status(400).json({ error: 'Kelompok properti harus A, B, C, atau D.' });
+    return;
+  }
+
+  if (!adminDb) {
+    res.status(503).json({ error: 'Backend Firebase belum aktif.' });
+    return;
+  }
+
+  const gameRef = adminDb.collection('games').doc(gameId);
+
+  try {
+    const gameSnap = await gameRef.get();
+    if (!gameSnap.exists) {
+      res.status(404).json({ error: 'Room tidak ditemukan.' });
+      return;
+    }
+    const gameData = gameSnap.data()!;
+    if (gameData.hostUid !== user.uid) {
+      res.status(403).json({ error: 'Hanya Host yang dapat mengelola katalog properti.' });
+      return;
+    }
+    if (gameData.status !== 'lobby') {
+      res.status(400).json({ error: 'Katalog hanya dapat diubah saat room berstatus Lobby.' });
+      return;
+    }
+
+    const assetId = `prop-${property.groupId.toLowerCase()}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
+    const assetRef = gameRef.collection('assets').doc(assetId);
+
+    const newAsset = {
+      id: assetId,
+      name: String(property.name).trim(),
+      groupId: property.groupId,
+      boardPosition: property.boardPosition ? Math.max(1, Math.round(Number(property.boardPosition))) : null,
+      category: 'property',
+      buyPrice: Math.max(0, Math.round(Number(property.buyPrice) || 0)),
+      mortgageValue: Math.max(0, Math.round(Number(property.mortgageValue) || 0)),
+      rentBase: Math.max(0, Math.round(Number(property.rentBase) || 0)),
+      rentOneHouse: Math.max(0, Math.round(Number(property.rentOneHouse) || 0)),
+      rentTwoHouses: Math.max(0, Math.round(Number(property.rentTwoHouses) || 0)),
+      rentThreeHouses: Math.max(0, Math.round(Number(property.rentThreeHouses) || 0)),
+      rentFourHouses: Math.max(0, Math.round(Number(property.rentFourHouses) || 0)),
+      rentHotel: Math.max(0, Math.round(Number(property.rentHotel) || 0)),
+      houseCost: Math.max(0, Math.round(Number(property.houseCost) || 0)),
+      hotelCost: Math.max(0, Math.round(Number(property.hotelCost) || 0)),
+      status: property.status === 'ready' ? 'ready' : 'draft',
+      ownerId: null,
+      isMortgaged: false,
+      housesCount: 0,
+      hotelsCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await assetRef.set(newAsset);
+    res.json({ success: true, asset: newAsset });
+  } catch (err: any) {
+    console.error('Create asset error:', err);
+    res.status(500).json({ error: err.message || 'Gagal menyimpan properti.' });
+  }
+});
+
+/**
+ * 3b. POST /api/assets/update
+ * Host edits property in catalog before game starts
+ */
+app.post('/api/assets/update', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { gameId, assetId, property } = req.body;
+  const user = req.user!;
+
+  if (!gameId || !assetId || !property) {
+    res.status(400).json({ error: 'Parameter tidak lengkap.' });
+    return;
+  }
+
+  if (!adminDb) {
+    res.status(503).json({ error: 'Backend Firebase belum aktif.' });
+    return;
+  }
+
+  const gameRef = adminDb.collection('games').doc(gameId);
+  const assetRef = gameRef.collection('assets').doc(assetId);
+
+  try {
+    const gameSnap = await gameRef.get();
+    if (!gameSnap.exists) {
+      res.status(404).json({ error: 'Room tidak ditemukan.' });
+      return;
+    }
+    const gameData = gameSnap.data()!;
+    if (gameData.hostUid !== user.uid) {
+      res.status(403).json({ error: 'Hanya Host yang dapat mengedit properti.' });
+      return;
+    }
+    if (gameData.status !== 'lobby') {
+      res.status(400).json({ error: 'Katalog tidak dapat diubah setelah permainan dimulai.' });
+      return;
+    }
+
+    const assetSnap = await assetRef.get();
+    if (!assetSnap.exists) {
+      res.status(404).json({ error: 'Properti tidak ditemukan.' });
+      return;
+    }
+    if (assetSnap.data()?.ownerId) {
+      res.status(400).json({ error: 'Properti yang sudah dimiliki pemain tidak dapat diedit.' });
+      return;
+    }
+
+    const updatedData = {
+      name: String(property.name).trim(),
+      groupId: property.groupId || 'A',
+      boardPosition: property.boardPosition ? Math.max(1, Math.round(Number(property.boardPosition))) : null,
+      buyPrice: Math.max(0, Math.round(Number(property.buyPrice) || 0)),
+      mortgageValue: Math.max(0, Math.round(Number(property.mortgageValue) || 0)),
+      rentBase: Math.max(0, Math.round(Number(property.rentBase) || 0)),
+      rentOneHouse: Math.max(0, Math.round(Number(property.rentOneHouse) || 0)),
+      rentTwoHouses: Math.max(0, Math.round(Number(property.rentTwoHouses) || 0)),
+      rentThreeHouses: Math.max(0, Math.round(Number(property.rentThreeHouses) || 0)),
+      rentFourHouses: Math.max(0, Math.round(Number(property.rentFourHouses) || 0)),
+      rentHotel: Math.max(0, Math.round(Number(property.rentHotel) || 0)),
+      houseCost: Math.max(0, Math.round(Number(property.houseCost) || 0)),
+      hotelCost: Math.max(0, Math.round(Number(property.hotelCost) || 0)),
+      status: property.status === 'ready' ? 'ready' : 'draft',
+      updatedAt: Date.now(),
+    };
+
+    await assetRef.update(updatedData);
+    res.json({ success: true, asset: { id: assetId, ...updatedData } });
+  } catch (err: any) {
+    console.error('Update asset error:', err);
+    res.status(500).json({ error: err.message || 'Gagal memperbarui properti.' });
+  }
+});
+
+/**
+ * 3c. POST /api/assets/delete
+ * Host deletes property from catalog before game starts
+ */
+app.post('/api/assets/delete', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { gameId, assetId } = req.body;
+  const user = req.user!;
+
+  if (!gameId || !assetId) {
+    res.status(400).json({ error: 'gameId dan assetId wajib diisi.' });
+    return;
+  }
+
+  if (!adminDb) {
+    res.status(503).json({ error: 'Backend Firebase belum aktif.' });
+    return;
+  }
+
+  const gameRef = adminDb.collection('games').doc(gameId);
+  const assetRef = gameRef.collection('assets').doc(assetId);
+
+  try {
+    const gameSnap = await gameRef.get();
+    if (!gameSnap.exists) {
+      res.status(404).json({ error: 'Room tidak ditemukan.' });
+      return;
+    }
+    const gameData = gameSnap.data()!;
+    if (gameData.hostUid !== user.uid) {
+      res.status(403).json({ error: 'Hanya Host yang dapat menghapus properti.' });
+      return;
+    }
+    if (gameData.status !== 'lobby') {
+      res.status(400).json({ error: 'Katalog tidak dapat diubah setelah permainan dimulai.' });
+      return;
+    }
+
+    const assetSnap = await assetRef.get();
+    if (!assetSnap.exists) {
+      res.status(404).json({ error: 'Properti tidak ditemukan.' });
+      return;
+    }
+    if (assetSnap.data()?.ownerId) {
+      res.status(400).json({ error: 'Properti yang sudah dimiliki pemain tidak dapat dihapus.' });
+      return;
+    }
+
+    await assetRef.delete();
+    res.json({ success: true, message: 'Properti berhasil dihapus.' });
+  } catch (err: any) {
+    console.error('Delete asset error:', err);
+    res.status(500).json({ error: err.message || 'Gagal menghapus properti.' });
+  }
+});
+
+/**
+ * 3d. POST /api/rooms/confirm-group
+ * Host confirms or unconfirms group A/B/C/D completeness
+ */
+app.post('/api/rooms/confirm-group', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { gameId, groupId, isConfirmed } = req.body;
+  const user = req.user!;
+
+  if (!gameId || !['A', 'B', 'C', 'D'].includes(groupId)) {
+    res.status(400).json({ error: 'gameId dan groupId (A/B/C/D) wajib diisi.' });
+    return;
+  }
+
+  if (!adminDb) {
+    res.status(503).json({ error: 'Backend Firebase belum aktif.' });
+    return;
+  }
+
+  const gameRef = adminDb.collection('games').doc(gameId);
+
+  try {
+    const gameSnap = await gameRef.get();
+    if (!gameSnap.exists) {
+      res.status(404).json({ error: 'Room tidak ditemukan.' });
+      return;
+    }
+    const gameData = gameSnap.data()!;
+    if (gameData.hostUid !== user.uid) {
+      res.status(403).json({ error: 'Hanya Host yang dapat mengonfirmasi kelengkapan kelompok.' });
+      return;
+    }
+    if (gameData.status !== 'lobby') {
+      res.status(400).json({ error: 'Kelompok tidak dapat diubah setelah permainan dimulai.' });
+      return;
+    }
+
+    const currentGroups = gameData.groupsConfig || {
+      A: { id: 'A', label: 'Kelompok A', rentMultiplier: 2, isConfirmed: false },
+      B: { id: 'B', label: 'Kelompok B', rentMultiplier: 2, isConfirmed: false },
+      C: { id: 'C', label: 'Kelompok C', rentMultiplier: 2, isConfirmed: false },
+      D: { id: 'D', label: 'Kelompok D', rentMultiplier: 2, isConfirmed: false },
+    };
+
+    currentGroups[groupId] = {
+      ...currentGroups[groupId],
+      isConfirmed: Boolean(isConfirmed),
+    };
+
+    await gameRef.update({
+      groupsConfig: currentGroups,
+    });
+
+    res.json({ success: true, groupsConfig: currentGroups });
+  } catch (err: any) {
+    console.error('Confirm group error:', err);
+    res.status(500).json({ error: err.message || 'Gagal mengubah status kelompok.' });
   }
 });
 

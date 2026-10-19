@@ -25,6 +25,23 @@ export interface GameMember {
 
 export type AssetCategory = 'property' | 'transport' | 'utility';
 
+export type GroupId = 'A' | 'B' | 'C' | 'D';
+
+export interface PropertyGroupConfig {
+  id: GroupId;
+  label: string;
+  rentMultiplier: number; // 2
+  isConfirmed: boolean;
+}
+
+export const DEFAULT_GROUPS_CONFIG: Record<GroupId, PropertyGroupConfig> = {
+  A: { id: 'A', label: 'Kelompok A', rentMultiplier: 2, isConfirmed: false },
+  B: { id: 'B', label: 'Kelompok B', rentMultiplier: 2, isConfirmed: false },
+  C: { id: 'C', label: 'Kelompok C', rentMultiplier: 2, isConfirmed: false },
+  D: { id: 'D', label: 'Kelompok D', rentMultiplier: 2, isConfirmed: false },
+};
+
+// Legacy color group for backward compatibility with existing simulation preset
 export type ColorGroup = 
   | 'brown' 
   | 'lightblue' 
@@ -37,26 +54,33 @@ export type ColorGroup =
   | 'transport' 
   | 'utility';
 
+export type PropertyStatus = 'draft' | 'ready';
+
 export interface AssetItem {
   id: string;
   name: string;
-  group: ColorGroup;
+  groupId: GroupId;
+  group?: ColorGroup | string; // legacy support
+  boardPosition?: number;
   category: AssetCategory;
   buyPrice: number;
   mortgageValue: number;
   rentBase: number;
-  rentOneHouse?: number;
-  rentTwoHouses?: number;
-  rentThreeHouses?: number;
-  rentFourHouses?: number;
-  rentHotel?: number;
-  houseCost?: number;
-  hotelCost?: number;
+  rentOneHouse: number;
+  rentTwoHouses: number;
+  rentThreeHouses: number;
+  rentFourHouses: number;
+  rentHotel: number;
+  houseCost: number; // IMB per rumah
+  hotelCost: number; // IMB hotel
+  status: PropertyStatus;
   // Dynamic state
   ownerId: string | null;
   isMortgaged: boolean;
   housesCount: number;
   hotelsCount: number;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export type TransactionType = 
@@ -135,8 +159,10 @@ export interface GameRoom {
     initialBalance: number;
     passStartReward: number;
     maxPlayers: number;
-    catalogPreset: 'simulation_indonesia' | 'custom_blank';
+    catalogPreset: 'custom_abcd' | 'simulation_indonesia_legacy';
     allowNegativeBalance: boolean; // default false (strictly forbidden)
   };
+  groupsConfig: Record<GroupId, PropertyGroupConfig>;
   initialBalanceDistributed: boolean;
+  membersCount?: number;
 }

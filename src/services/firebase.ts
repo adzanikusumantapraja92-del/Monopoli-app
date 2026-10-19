@@ -16,6 +16,8 @@ import {
 } from 'firebase/firestore';
 import { 
   GameRoom, 
+  GameMember,
+  AssetItem,
   PawnColor, 
   RequestType, 
   VoteDecision 
@@ -62,42 +64,28 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 }
 
 // Config resolution: environment variables
-const envApiKey = import.meta.env.VITE_FIREBASE_API_KEY;
-const envProjectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+import firebaseConfig from '../../firebase-applet-config.json';
+import { getDocFromServer } from 'firebase/firestore';
 
 export const isFirebaseConfigured = Boolean(
-  envApiKey && 
-  envProjectId && 
-  envApiKey !== 'MY_FIREBASE_API_KEY' &&
-  envProjectId !== 'MY_FIREBASE_PROJECT_ID'
+  firebaseConfig?.projectId && 
+  firebaseConfig?.apiKey
 );
 
-let app: FirebaseApp | null = null;
-let authInstance: Auth | null = null;
-let dbInstance: Firestore | null = null;
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
+export const auth = getAuth(app);
 
-if (isFirebaseConfigured) {
+async function testConnection() {
   try {
-    const firebaseConfig = {
-      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || `${envProjectId}.firebaseapp.com`,
-      projectId: envProjectId,
-      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || `${envProjectId}.firebasestorage.app`,
-      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-      appId: import.meta.env.VITE_FIREBASE_APP_ID,
-    };
-
-    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    const databaseId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
-    dbInstance = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
-    authInstance = getAuth(app);
-  } catch (err) {
-    console.warn('Firebase initialization error:', err);
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration.");
+    }
   }
 }
-
-export const auth = authInstance;
-export const db = dbInstance;
+testConnection();
 
 /**
  * Get JWT bearer token for backend server calls
@@ -128,82 +116,163 @@ export async function signOutUser(): Promise<void> {
 }
 
 /**
- * Create Game Room on Cloud Firestore & initialize catalog
+ * Create Game Room on Cloud Firestore via trusted backend:
+ * Atomic creation of room + host member + initial catalog
  */
-export async function createGameInFirestore(
+export async function createGameViaBackend(
   hostUser: { uid: string; displayName: string; email?: string; photoURL?: string },
   pawnColor: PawnColor,
   settings: {
     initialBalance: number;
     passStartReward: number;
     maxPlayers: number;
-    catalogPreset: 'simulation_indonesia' | 'custom_blank';
+    catalogPreset: 'custom_abcd' | 'simulation_indonesia_legacy';
   }
 ): Promise<{ gameId: string; roomCode: string }> {
-  if (!db) {
-    throw new Error('Firestore tidak aktif.');
-  }
+  const token = await getAuthToken();
 
-  const roomCode = generateRoomCode();
-  const gameRef = doc(collection(db, 'games'));
-  const gameId = gameRef.id;
-
-  const newGame: Omit<GameRoom, 'id'> = {
-    roomCode,
-    hostUid: hostUser.uid,
-    status: 'lobby',
-    createdAt: Date.now(),
-    settings: {
-      ...settings,
-      allowNegativeBalance: false,
+  const res = await fetch('/api/rooms/create', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
     },
-    initialBalanceDistributed: false,
-  };
-
-  try {
-    // 1. Create Game document
-    await setDoc(gameRef, {
-      ...newGame,
-      id: gameId,
-      membersCount: 1,
-    });
-
-    // 2. Add Host to members subcollection (balance = 0 until atomic start by host)
-    const hostMemberDoc = doc(db, 'games', gameId, 'members', hostUser.uid);
-    await setDoc(hostMemberDoc, {
-      uid: hostUser.uid,
-      displayName: hostUser.displayName || 'Host',
-      email: hostUser.email || '',
-      avatarUrl: hostUser.photoURL || '',
+    body: JSON.stringify({
+      displayName: hostUser.displayName,
       pawnColor,
-      isHost: true,
-      balance: 0,
-      isBankrupt: false,
-      joinedAt: Date.now(),
-      propertiesOwnedCount: 0,
-    });
+      initialBalance: settings.initialBalance,
+      passStartReward: settings.passStartReward,
+      maxPlayers: settings.maxPlayers,
+      catalogPreset: settings.catalogPreset,
+    }),
+  });
 
-    // 3. Populate Asset Catalog subcollection
-    const assetsToLoad = settings.catalogPreset === 'simulation_indonesia' 
-      ? SIMULASI_INDONESIA_ASSETS 
-      : [];
-
-    for (const asset of assetsToLoad) {
-      const assetDoc = doc(db, 'games', gameId, 'assets', asset.id);
-      await setDoc(assetDoc, {
-        ...asset,
-        ownerId: null,
-        isMortgaged: false,
-        housesCount: 0,
-        hotelsCount: 0,
-      });
-    }
-
-    return { gameId, roomCode };
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `games/${gameId}`);
-    throw error;
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal membuat room permainan.');
   }
+
+  return res.json();
+}
+
+/**
+ * Host creates a property in catalog A, B, C, D
+ */
+export async function createAssetViaBackend(
+  gameId: string,
+  property: Partial<AssetItem>
+): Promise<AssetItem> {
+  const token = await getAuthToken();
+
+  const res = await fetch('/api/assets/create', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      gameId,
+      property,
+    }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal menyimpan properti.');
+  }
+
+  const data = await res.json();
+  return data.asset;
+}
+
+/**
+ * Host updates a property in catalog
+ */
+export async function updateAssetViaBackend(
+  gameId: string,
+  assetId: string,
+  property: Partial<AssetItem>
+): Promise<AssetItem> {
+  const token = await getAuthToken();
+
+  const res = await fetch('/api/assets/update', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      gameId,
+      assetId,
+      property,
+    }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal memperbarui properti.');
+  }
+
+  const data = await res.json();
+  return data.asset;
+}
+
+/**
+ * Host deletes a property from catalog
+ */
+export async function deleteAssetViaBackend(
+  gameId: string,
+  assetId: string
+): Promise<void> {
+  const token = await getAuthToken();
+
+  const res = await fetch('/api/assets/delete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      gameId,
+      assetId,
+    }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal menghapus properti.');
+  }
+}
+
+/**
+ * Host confirms or unconfirms group A/B/C/D
+ */
+export async function confirmGroupViaBackend(
+  gameId: string,
+  groupId: 'A' | 'B' | 'C' | 'D',
+  isConfirmed: boolean
+): Promise<any> {
+  const token = await getAuthToken();
+
+  const res = await fetch('/api/rooms/confirm-group', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      gameId,
+      groupId,
+      isConfirmed,
+    }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Gagal mengubah status kelompok.');
+  }
+
+  return res.json();
 }
 
 export interface PublicRoomLookup {
